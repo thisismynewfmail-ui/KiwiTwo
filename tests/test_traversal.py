@@ -55,6 +55,19 @@ def _thread_page_links(base, total_pages):
     return [{"href": page_url(base, n)} for n in range(1, total_pages + 1)]
 
 
+def _realistic_thread_nav(base, current, total, window=2):
+    """A faithful XenForo page nav: the first page, a small window around the
+    current page, and — always — the *last* page.  Unlike ``_thread_page_links``
+    it does not advertise every page, so a crawl can only learn the true end of a
+    thread from the always-present last-page link.  This is what makes the
+    descend-from-the-latest-page walk and its mid-crawl growth handling realistic
+    to test."""
+    shown = {1, total}
+    for n in range(max(1, current - window), min(total, current + window) + 1):
+        shown.add(n)
+    return [{"href": page_url(base, n)} for n in sorted(shown)]
+
+
 class FakeSite:
     def __init__(self, link_map):
         self.link_map = link_map  # callable(url) -> list[{"href": ...}]
@@ -436,6 +449,48 @@ class ThreadCoverage(unittest.TestCase):
         self.assertIn(THREAD + "/page-4", crawled)   # the appended page is caught
         for n in range(2, 5):
             self.assertEqual(crawled.count(THREAD + f"/page-{n}"), 1)
+
+    def test_posts_appended_while_descending_from_the_last_page_are_caught(self):
+        # The real KiwiFarms scenario: the thread is entered on its most recent
+        # page and walked *down*.  While descending, new posts append fresh pages
+        # at the top (12 -> 14).  Because the down-walk's +1 step always lands on
+        # a page already taken, those new pages would be missed unless the crawl
+        # re-extends to the advertised last page — this is the regression guard.
+        total = 12
+        last = THREAD + f"/page-{total}"
+        state = {"total": total, "grown": False}
+
+        def link_map(url):
+            base, _ = split_pagination(url)
+            if url == HOME:
+                return [{"href": FORUM}]
+            if base == FORUM:
+                return [{"href": last}]            # linked at its latest page only
+            if base == THREAD:
+                page = split_pagination(url)[1]
+                # Once we have descended to page 9, a flurry of posts appends two
+                # whole new pages (13 and 14) past the end we entered on.
+                if page == 9 and not state["grown"]:
+                    state["grown"] = True
+                    state["total"] = 14
+                return _realistic_thread_nav(THREAD, page, state["total"])
+            return []
+
+        order = run_crawl(FakeSite(link_map), self.store, max_depth=3)
+        crawled = [u for u, _ in order]
+        final_total = 14
+        expected_pages = [THREAD] + [THREAD + f"/page-{n}"
+                                     for n in range(2, final_total + 1)]
+        # Every page 1..14 — including the two appended past the entry point and
+        # the gap backfilled beneath the new frontier — is archived exactly once.
+        for p in expected_pages:
+            self.assertEqual(crawled.count(p), 1, p)
+        self.assertIn(THREAD + "/page-13", crawled)
+        self.assertIn(THREAD + "/page-14", crawled)
+        # The entry and the first few descent steps are still a clean, contiguous
+        # walk down from the page we entered on.
+        self.assertEqual(crawled[2], THREAD + f"/page-{total}")
+        self.assertEqual(crawled[3], THREAD + f"/page-{total - 1}")
 
 
 # --------------------------------------------------------------------------- #

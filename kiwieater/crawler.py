@@ -65,9 +65,13 @@ def plan_children(url, depth, links, max_depth, is_known=None, focus_path=None):
       opens on its *most recent* page, so we step to the **previous** page first
       (``…/page-700 → …/page-699 → …``) and systematically walk down to page 1;
       the next page is queued too when one is advertised, which covers a lower
-      entry point and any page a new post appends mid-crawl.  ``max_advertised``
-      is re-read from each page's own nav, so a page count that changes while the
-      backup runs is handled rather than cached.
+      entry point and the walk up toward the newest page.  ``max_advertised`` is
+      re-read from each page's own nav, so a page count that changes while the
+      backup runs is seen rather than cached — and when the thread grows a *new*
+      last page after we have already descended past the old end (the +1 step
+      then only re-treads a page we hold), the crawl re-extends straight to that
+      advertised frontier and walks it back down, so a post made mid-backup is
+      still archived in full rather than left off the end.
 
     * **Content sections dive, listings fan out.**  On a thread we put its
       pagination *first* so the thread is followed to its end before its outbound
@@ -112,13 +116,29 @@ def plan_children(url, depth, links, max_depth, is_known=None, focus_path=None):
     # it is covered in full regardless of which page we entered on.  Threads open
     # on the most recent page, so the previous page leads (a systematic walk down
     # to page 1); the next page follows when one is advertised, picking up a lower
-    # entry point and any page a new post adds while the backup is running.
-    # ``max_advertised`` is re-derived from this page every call, never cached.
+    # entry point and walking up toward the newest page.  ``max_advertised`` is
+    # re-derived from this page every call, never cached, so a page count that
+    # changes mid-backup is seen rather than stale.
     cur_page = split_pagination(url)[1]
     max_advertised = max(same_section_pages) if same_section_pages else cur_page
-    prev_pg = page_url(section, cur_page - 1) if cur_page > 1 else None
-    next_pg = next_page_url(url) if max_advertised > cur_page else None
-    pagination = [p for p in (prev_pg, next_pg) if p]
+    pagination = []
+    if cur_page > 1:
+        pagination.append(page_url(section, cur_page - 1))      # walk down
+    if max_advertised > cur_page:
+        nxt = next_page_url(url)                                # walk up one page
+        pagination.append(nxt)
+        # Re-extend to a frontier that grew out of reach.  Descending from the
+        # latest page, the +1 step is always a page we have already taken, so a
+        # post that appends a *new* last page after we passed the old end would
+        # otherwise never be queued — the bug that left a growing thread short.
+        # When the immediate next page is already settled yet the thread now
+        # advertises an even later page, jump straight to that newest page; its
+        # own previous-page walk then backfills any gap down to the pages already
+        # held.  Gated on ``is_known`` so it fires only for genuine growth, never
+        # on a fresh sequential walk (where the +1 step is the unseen next page).
+        frontier = page_url(section, max_advertised)
+        if frontier != nxt and is_known(nxt) and not is_known(frontier):
+            pagination.append(frontier)
 
     # Pagination is a same-section continuation and must NOT be cut off by the
     # depth cap, or a long thread would be archived only part-way; only descents

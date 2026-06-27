@@ -1,0 +1,9 @@
+# KiwiEater runtime data (archive DB, browser profile, session logs)
+kiwieater_data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/

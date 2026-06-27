@@ -10,6 +10,37 @@ any tool.
 This tool is purpose-built for one site. Scope is locked to `kiwifarms.st` and
 its sub-domains by design.
 
+## How it crawls — a section-aware spiderweb
+
+The backup is built **programmatically**, starting from the site's main page and
+navigating with the site's own buttons, so coverage is complete and a stopped
+crawl resumes exactly where it left off.
+
+- **Spiderwebbing, depth-first.** From the main page it dives into a forum, then
+  a thread, follows that thread's pagination all the way down
+  (`…/page-2 → …/page-3 → …`), then **backtracks** to the listing and takes the
+  next thread, then the next forum — covering every page along every trail. For
+  example: it finishes every page of
+  `https://kiwifarms.st/threads/kino-casino.110845/`, returns to
+  `https://kiwifarms.st/threads/`, takes the next thread, and once that listing
+  is exhausted moves on to `https://kiwifarms.st/forums/lolcows.16/`, and so on.
+
+- **Dynamic, section-relative depth.** Depth is the length of the navigation
+  *trail*, and **each extra page of a section is one step deeper**. So with a
+  `MAX DEPTH` of 500 the crawler digs up to ~500 pages deep *within a single
+  subsection*. A thread reached via main → forum → sub-forum sits at depth 4 and
+  its `page-65` at depth **68** — the depth adapts to where each section lives.
+
+- **A stored trail.** Every queued URL carries a materialised-path `trail`;
+  ordering the queue by it both produces the depth-first walk and — because the
+  trail is persisted in SQLite — reproduces the *identical* order after a
+  Stop/crash. That one fact gives both full coverage and an exact resume. The
+  trail, parent, and section of every page are written into the portable backup
+  (`manifest.json`) too, so the navigation structure travels with the data.
+
+Set `PAGE LIMIT` to `0` to pull **all** pages (it is only a safety cap);
+otherwise the crawl stops after that many pages, still fully resumable.
+
 ## Run
 
 ```bash
@@ -52,7 +83,7 @@ kiwieater/
   storage.py               SQLite resume state + JSON/BLOB archive store
   cleaner.py               structural HTML cleaning
   browser.py               real-browser engine + Kiwiflare solver
-  crawler.py               background, pausable, resumable crawl worker
+  crawler.py               section-aware spiderweb (depth-first, resumable) worker
   archive_builder.py       manifest / gallery / search + standalone viewer
   server.py                Flask console + archive routes
   webui/console.html       the in-universe 1950s console
@@ -88,9 +119,9 @@ never loaded.
 
 - **In-universe 1950s computer:** oscilloscope tied to live crawl activity,
   spinning tape reels, status lamps, VU meters, and a teletype log.
-- **Directives:** target root, max depth, page limit, inter-page sleep + jitter,
-  challenge wait, per-URL retries, browser engine, headless toggle, BLOB
-  capture, manual-solve toggle.
+- **Directives:** target root, max depth (trail/pages deep), page limit
+  (`0 = ALL`), inter-page sleep + jitter, challenge wait, per-URL retries,
+  browser engine, headless toggle, BLOB capture, manual-solve toggle.
 - **RESUME / RUN · NEW ARCHIVE · PAUSE · STOP · REBUILD INDEX · OPEN ARCHIVE.**
 - **Resume:** the work queue is persisted in SQLite and every page/BLOB is
   written atomically, so a stopped or crashed crawl resumes exactly where it

@@ -17,6 +17,11 @@ DEFAULT_ROOT = "https://kiwifarms.st/"
 
 APP_PORT = int(os.environ.get("KIWIEATER_PORT", "8777"))
 
+# Origin token of every crawl trail (the main page).  Children append
+# zero-padded ordinals to it; ordering queue rows by this materialised path
+# reproduces the depth-first spiderweb walk and a byte-for-byte resume order.
+ROOT_TRAIL = "000000"
+
 # --------------------------------------------------------------------------- #
 #  Filesystem layout
 # --------------------------------------------------------------------------- #
@@ -131,8 +136,11 @@ CONTENT_TYPE_EXT = {
 
 DEFAULT_SETTINGS = {
     "root_url": DEFAULT_ROOT,
-    "max_depth": 2,
-    "max_pages": 500,
+    # Trail length (main page = 1).  Because pagination deepens the trail one
+    # page at a time, 500 means "dig up to ~500 pages deep within a section".
+    "max_depth": 500,
+    # Hard safety cap on pages processed; 0 = unlimited ("pull ALL pages").
+    "max_pages": 0,
     "sleep": 3.0,            # base inter-page delay, seconds
     "jitter": 1.5,          # +/- random jitter on the delay
     "engine": "auto",       # auto | playwright | selenium

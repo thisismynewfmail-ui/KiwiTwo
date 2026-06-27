@@ -58,7 +58,8 @@ class ArchiveStore:
                 """
                 CREATE TABLE IF NOT EXISTS pages(
                     url TEXT PRIMARY KEY, title TEXT, text TEXT,
-                    depth INTEGER, file TEXT, fetched_at TEXT
+                    depth INTEGER, file TEXT, fetched_at TEXT,
+                    trail TEXT, parent TEXT, section TEXT, page_no INTEGER DEFAULT 1
                 );
                 CREATE TABLE IF NOT EXISTS blobs(
                     url TEXT PRIMARY KEY, sha256 TEXT, content_type TEXT,
@@ -66,7 +67,8 @@ class ArchiveStore:
                 );
                 CREATE TABLE IF NOT EXISTS queue(
                     url TEXT PRIMARY KEY, depth INTEGER, status TEXT,
-                    attempts INTEGER DEFAULT 0, updated_at TEXT
+                    attempts INTEGER DEFAULT 0, updated_at TEXT,
+                    trail TEXT, parent TEXT, section TEXT, page_no INTEGER DEFAULT 1
                 );
                 CREATE TABLE IF NOT EXISTS links(
                     src TEXT, dst TEXT, PRIMARY KEY(src, dst)
@@ -77,15 +79,33 @@ class ArchiveStore:
                     ts TEXT, level TEXT, msg TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
+                CREATE INDEX IF NOT EXISTS idx_queue_trail ON queue(trail);
                 CREATE INDEX IF NOT EXISTS idx_blobs_ct ON blobs(content_type);
                 """
             )
+            # Upgrade older databases in place so the trail/section columns the
+            # spiderweb crawl relies on exist even on a resumed legacy archive.
+            self._migrate(c, "queue", {"trail": "TEXT", "parent": "TEXT",
+                                       "section": "TEXT",
+                                       "page_no": "INTEGER DEFAULT 1"})
+            self._migrate(c, "pages", {"trail": "TEXT", "parent": "TEXT",
+                                       "section": "TEXT",
+                                       "page_no": "INTEGER DEFAULT 1"})
             try:
                 c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts "
                           "USING fts5(url, title, text)")
                 self.fts = True
             except Exception:
                 self.fts = False
+
+    @staticmethod
+    def _migrate(c, table, columns):
+        """Add any missing columns to ``table`` (SQLite has no ADD COLUMN IF
+        NOT EXISTS, so we diff against ``PRAGMA table_info``)."""
+        have = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns.items():
+            if name not in have:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     # ------------------------------------------------------------------ #
     #  meta / settings
@@ -120,16 +140,24 @@ class ArchiveStore:
     # ------------------------------------------------------------------ #
     #  Queue (resume engine)
     # ------------------------------------------------------------------ #
-    def enqueue(self, url, depth):
+    def enqueue(self, url, depth, trail="", parent=None, section="", page_no=1):
         with self._lock, self._conn() as c:
-            c.execute("INSERT OR IGNORE INTO queue(url,depth,status,updated_at) "
-                      "VALUES(?,?, 'pending', ?)", (url, depth, _now()))
+            c.execute(
+                "INSERT OR IGNORE INTO queue"
+                "(url,depth,status,updated_at,trail,parent,section,page_no) "
+                "VALUES(?,?, 'pending', ?,?,?,?,?)",
+                (url, depth, _now(), trail, parent, section, page_no))
 
     def next_pending(self):
+        # ``trail`` is a materialised path, so ordering by it lexically yields a
+        # depth-first (spiderweb) pre-order — and, because it is persisted, the
+        # *same* order after a Stop/crash, which is what makes resume exact.
         with self._lock, self._conn() as c:
             row = c.execute(
-                "SELECT url,depth,attempts FROM queue WHERE status='pending' "
-                "ORDER BY depth ASC, rowid ASC LIMIT 1").fetchone()
+                "SELECT url,depth,attempts,trail,parent,section,page_no "
+                "FROM queue WHERE status='pending' "
+                "ORDER BY (trail IS NULL), trail ASC, depth ASC, rowid ASC "
+                "LIMIT 1").fetchone()
             if row:
                 c.execute("UPDATE queue SET status='processing', updated_at=? "
                           "WHERE url=?", (_now(), row["url"]))
@@ -159,12 +187,15 @@ class ArchiveStore:
     # ------------------------------------------------------------------ #
     #  Pages  (SQLite index + JSON file body)
     # ------------------------------------------------------------------ #
-    def save_page(self, url, title, html, text, depth, links, assets):
+    def save_page(self, url, title, html, text, depth, links, assets,
+                  trail="", parent=None, section="", page_no=1):
         key = url_key(url)
         rel = os.path.join("pages", f"{key}.json")
         abspath = os.path.join(config.ARCHIVE_DIR, rel)
         record = {
             "url": url, "title": title, "depth": depth,
+            "trail": trail, "parent": parent, "section": section,
+            "page_no": page_no,
             "fetched_at": _now(), "html": html, "text": text,
             "links": links, "assets": sorted(assets),
         }
@@ -175,11 +206,15 @@ class ArchiveStore:
 
         with self._lock, self._conn() as c:
             c.execute(
-                "INSERT INTO pages(url,title,text,depth,file,fetched_at) "
-                "VALUES(?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET "
+                "INSERT INTO pages(url,title,text,depth,file,fetched_at,"
+                "trail,parent,section,page_no) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET "
                 "title=excluded.title, text=excluded.text, depth=excluded.depth,"
-                "file=excluded.file, fetched_at=excluded.fetched_at",
-                (url, title, text, depth, rel, record["fetched_at"]))
+                "file=excluded.file, fetched_at=excluded.fetched_at, "
+                "trail=excluded.trail, parent=excluded.parent, "
+                "section=excluded.section, page_no=excluded.page_no",
+                (url, title, text, depth, rel, record["fetched_at"],
+                 trail, parent, section, page_no))
             if self.fts:
                 try:
                     c.execute("DELETE FROM pages_fts WHERE url=?", (url,))
@@ -206,11 +241,15 @@ class ArchiveStore:
             return c.execute("SELECT 1 FROM pages WHERE url=?",
                              (url,)).fetchone() is not None
 
-    def list_pages(self, limit=20000):
+    def list_pages(self, limit=200000):
+        # Order by trail so the manifest/index reflect the real navigation trail
+        # (home first, then each section dived through in spiderweb order).
         with self._conn() as c:
             return [dict(r) for r in c.execute(
-                "SELECT url,title,depth,file,fetched_at FROM pages "
-                "ORDER BY depth ASC, url ASC LIMIT ?", (limit,))]
+                "SELECT url,title,depth,file,fetched_at,trail,parent,section,"
+                "page_no FROM pages "
+                "ORDER BY (trail IS NULL), trail ASC, depth ASC, url ASC "
+                "LIMIT ?", (limit,))]
 
     # ------------------------------------------------------------------ #
     #  BLOB assets  (de-duplicated files on disk)

@@ -1,5 +1,9 @@
-# KiwiEater runtime data (archive DB, browser profile, session logs)
+# KiwiEater operational data (queue DB, browser profile, session logs)
 kiwieater_data/
+
+# The portable backup output. Generated content is not committed; the viewer
+# template lives in kiwieater/webui/viewer and is copied here at build time.
+Archive/
 
 # Python
 __pycache__/
@@ -7,3 +11,5 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+*.egg-info/
+.pytest_cache/

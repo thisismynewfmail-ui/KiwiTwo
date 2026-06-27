@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KIWIEATER · ARCHIVAL MAINFRAME</title>
+<style>
+:root{
+ --amber:#ffb000; --amber-dim:#a86b00; --green:#33ff66; --red:#ff4444;
+ --panel:#2b2622; --panel2:#1c1916; --steel:#3a3531; --bezel:#0d0c0b;
+ --label:#d9c7a3; --glass:#08110a;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+ background:radial-gradient(circle at 30% 20%, #322c26 0, #1a1714 60%, #0c0a09 100%);
+ font-family:'Courier New',monospace; color:var(--label); overflow-x:hidden; padding:18px;
+}
+.chassis{
+ max-width:1200px;margin:0 auto;background:linear-gradient(#37312b,#241f1b);
+ border:3px solid #4a443d;border-radius:14px;
+ box-shadow:0 18px 50px #000, inset 0 2px 0 #5a5249, inset 0 -6px 18px #000;
+ padding:18px 20px 26px;position:relative;
+}
+.nameplate{display:flex;align-items:center;gap:18px;border-bottom:2px solid #4a443d;
+ padding-bottom:12px;margin-bottom:16px}
+.badge{width:54px;height:54px;border-radius:8px;flex:0 0 auto;
+ background:radial-gradient(circle at 35% 30%,#7CFC00,#0b3b00);
+ border:2px solid #0a2a00;box-shadow:0 0 16px #2bff0066, inset 0 0 12px #001a00;position:relative}
+.badge::after{content:"🥝";position:absolute;inset:0;display:flex;align-items:center;
+ justify-content:center;font-size:26px}
+.title h1{margin:0;font-size:26px;letter-spacing:6px;color:var(--amber);text-shadow:0 0 10px #ffb00066}
+.title .sub{font-size:11px;letter-spacing:3px;color:var(--amber-dim)}
+.serial{margin-left:auto;text-align:right;font-size:11px;color:#8a7d68}
+.serial b{color:var(--label)}
+
+.grid{display:grid;grid-template-columns:350px 1fr 300px;gap:16px}
+@media(max-width:980px){.grid{grid-template-columns:1fr}}
+.bay{background:linear-gradient(#211d19,#171410);border:2px solid #463f38;
+ border-radius:10px;padding:14px;box-shadow:inset 0 0 22px #000}
+.bay h2{margin:0 0 12px;font-size:12px;letter-spacing:3px;color:var(--amber);
+ border-bottom:1px dashed #4a443d;padding-bottom:6px}
+
+/* CRT scope */
+.crt{position:relative;background:var(--glass);border-radius:50% / 8%;
+ border:10px solid #0b0a09;box-shadow:inset 0 0 40px #000,0 0 0 2px #2a2622;overflow:hidden;height:220px}
+.crt canvas{width:100%;height:100%;display:block}
+.crt::after{content:"";position:absolute;inset:0;pointer-events:none;
+ background:repeating-linear-gradient(transparent 0 2px,#00000055 2px 4px);
+ animation:roll 8s linear infinite;opacity:.5}
+@keyframes roll{from{background-position:0 0}to{background-position:0 200px}}
+.scopelabel{position:absolute;left:10px;bottom:8px;color:#1f7a3a;font-size:10px;
+ letter-spacing:2px;text-shadow:0 0 6px #00ff5577}
+
+/* reels */
+.reels{display:flex;justify-content:space-around;align-items:center;padding:10px 0 2px}
+.reel{width:92px;height:92px;border-radius:50%;
+ background:repeating-radial-gradient(#2a2521 0 6px,#1a1613 6px 12px);
+ border:3px solid #524a41;position:relative;box-shadow:inset 0 0 18px #000}
+.reel::before{content:"";position:absolute;inset:36px;border-radius:50%;
+ background:#0d0b09;border:2px solid #6b6056}
+.reel .spoke{position:absolute;inset:6px;border-radius:50%}
+.reel .spoke span{position:absolute;left:50%;top:50%;width:6px;height:36px;margin:-36px 0 0 -3px;
+ background:#6b6056;transform-origin:bottom center;border-radius:3px}
+.spinning{animation:spin 1.6s linear infinite}.spinning.fast{animation-duration:.5s}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* lamps */
+.lamps{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-top:6px}
+.lamp{display:flex;flex-direction:column;align-items:center;gap:5px;font-size:9px;
+ letter-spacing:1px;color:#8a7d68;width:54px;text-align:center}
+.bulb{width:18px;height:18px;border-radius:50%;background:#3a201a;
+ border:2px solid #120a08;box-shadow:inset 0 0 6px #000}
+.bulb.on{background:radial-gradient(circle at 35% 30%,#fff,var(--c));
+ box-shadow:0 0 14px var(--c),inset 0 0 6px #fff8}
+.bulb.blink{animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:.25}}
+
+/* meters */
+.meter{margin:10px 0}
+.meter .m-top{display:flex;justify-content:space-between;font-size:10px;letter-spacing:1px;
+ color:#9c8e76;margin-bottom:3px}
+.m-track{height:14px;background:#0c0a08;border:1px solid #463f38;border-radius:3px;
+ overflow:hidden;box-shadow:inset 0 0 6px #000}
+.m-fill{height:100%;width:0;background:linear-gradient(90deg,#2bff66,#bfff20,#ff9d2b);transition:width .5s ease}
+.m-val{font-size:11px;color:var(--label)}
+
+/* controls */
+.field{margin-bottom:10px}
+.field label{display:block;font-size:10px;letter-spacing:2px;color:#9c8e76;margin-bottom:4px}
+.field input,.field select{width:100%;background:#0c0a08;border:1px solid #5a5249;
+ color:var(--amber);padding:7px 8px;font-family:inherit;border-radius:4px}
+.row{display:flex;gap:10px}.row>*{flex:1}
+.switch{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:11px;
+ color:var(--label);margin:8px 0}
+.switch .track{width:42px;height:20px;border-radius:10px;background:#1a1613;
+ border:1px solid #5a5249;position:relative;transition:.2s;flex:0 0 auto}
+.switch .knob{position:absolute;top:1px;left:1px;width:16px;height:16px;border-radius:50%;
+ background:#8a7d68;transition:.2s}
+.switch.on .track{background:#1d4d1d}.switch.on .knob{left:23px;background:#7CFC00}
+
+.btns{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}
+button.key{font-family:inherit;letter-spacing:2px;font-weight:bold;cursor:pointer;
+ padding:12px 8px;border-radius:6px;border:2px solid #0c0a08;color:#120a08;
+ background:linear-gradient(#d9c7a3,#a8946c);box-shadow:0 3px 0 #5e5341,0 5px 8px #000;transition:.08s}
+button.key:active{transform:translateY(3px);box-shadow:0 0 0 #5e5341}
+button.key.go{background:linear-gradient(#7CFC00,#2f9e00);color:#012600}
+button.key.stop{background:linear-gradient(#ff7b6b,#c0291a);color:#2a0500}
+button.key.warn{background:linear-gradient(#ffd36b,#c9920f)}
+button.key.cool{background:linear-gradient(#9fe8ff,#2f9ec9);color:#022430}
+button.key:disabled{filter:grayscale(.7) brightness(.7);cursor:not-allowed}
+button.key.full{grid-column:1/3}
+
+/* teletype */
+.teletype{background:#07110a;border:2px solid #103a18;border-radius:8px;height:230px;
+ overflow:auto;padding:10px;font-size:12px;line-height:1.5;color:#33ff66;
+ text-shadow:0 0 4px #00ff5544;box-shadow:inset 0 0 30px #000}
+.teletype .l-WARNING{color:#ffd36b}.teletype .l-ERROR{color:#ff6b5b}.teletype .ts{color:#1f7a3a}
+.statline{display:flex;gap:18px;flex-wrap:wrap;font-size:11px;margin-top:10px;color:#9c8e76}
+.statline b{color:var(--amber)}
+.now{font-size:11px;color:#33ff66;word-break:break-all;min-height:16px}
+.foot{margin-top:14px;font-size:10px;color:#6f6353;text-align:center;letter-spacing:2px}
+.lan{font-size:11px;color:#7CFC00;margin-top:6px;min-height:14px}
+::-webkit-scrollbar{width:10px}::-webkit-scrollbar-thumb{background:#3a3531;border-radius:5px}
+</style></head>
+<body>
+<div class="chassis">
+ <div class="nameplate">
+  <div class="badge"></div>
+  <div class="title"><h1>KIWIEATER</h1>
+   <div class="sub">OFFLINE ARCHIVAL MAINFRAME · MODEL KW-1958</div></div>
+  <div class="serial">UNIT S/N <b>KE-0007</b><br><span id="clock"></span></div>
+ </div>
+
+ <div class="grid">
+  <!-- LEFT: controls -->
+  <div class="bay">
+   <h2>◉ ARCHIVE DIRECTIVES</h2>
+   <div class="field"><label>TARGET ROOT (kiwifarms.st only)</label>
+    <input id="root" value="https://kiwifarms.st/"></div>
+   <div class="row">
+    <div class="field"><label>MAX DEPTH</label><input id="depth" type="number" value="2" min="0"></div>
+    <div class="field"><label>PAGE LIMIT</label><input id="pages" type="number" value="500" min="1"></div>
+   </div>
+   <div class="row">
+    <div class="field"><label>SLEEP (s)</label><input id="sleep" type="number" value="3" step="0.5" min="0"></div>
+    <div class="field"><label>JITTER (±s)</label><input id="jitter" type="number" value="1.5" step="0.5" min="0"></div>
+   </div>
+   <div class="row">
+    <div class="field"><label>CHALLENGE WAIT (s)</label><input id="chal" type="number" value="90" min="10"></div>
+    <div class="field"><label>RETRIES / URL</label><input id="attempts" type="number" value="4" min="1"></div>
+   </div>
+   <div class="field"><label>BROWSER ENGINE</label>
+    <select id="engine">
+     <option value="auto">AUTO (Playwright → Selenium)</option>
+     <option value="playwright">PLAYWRIGHT</option>
+     <option value="selenium">SELENIUM</option>
+    </select></div>
+   <div class="switch on" id="sw-assets"><div class="track"><div class="knob"></div></div>
+     <span>CAPTURE IMAGES / VIDEO AS BLOBS</span></div>
+   <div class="switch" id="sw-headless"><div class="track"><div class="knob"></div></div>
+     <span>HEADLESS BROWSER (off = beats challenge)</span></div>
+   <div class="switch on" id="sw-manual"><div class="track"><div class="knob"></div></div>
+     <span>ALLOW MANUAL CHALLENGE SOLVE</span></div>
+   <div class="switch" id="sw-network"><div class="track"><div class="knob"></div></div>
+     <span>SHARE OVER LOCAL NETWORK</span></div>
+   <div class="lan" id="lan"></div>
+
+   <div class="btns">
+    <button class="key go" id="b-start">▶ RESUME / RUN</button>
+    <button class="key warn" id="b-new">✦ NEW ARCHIVE</button>
+    <button class="key" id="b-pause">❚❚ PAUSE</button>
+    <button class="key stop" id="b-stop">■ STOP</button>
+    <button class="key cool" id="b-rebuild">⟳ REBUILD INDEX</button>
+    <button class="key" id="b-open">⧉ OPEN ARCHIVE</button>
+   </div>
+  </div>
+
+  <!-- CENTER: scope + teletype -->
+  <div class="bay">
+   <h2>◉ SIGNAL MONITOR</h2>
+   <div class="crt"><canvas id="scope"></canvas>
+     <div class="scopelabel" id="scopelabel">STANDBY</div></div>
+   <div class="reels">
+     <div class="reel"><div class="spoke" id="reelA"><span style="transform:rotate(0)"></span><span style="transform:rotate(60deg)"></span><span style="transform:rotate(120deg)"></span></div></div>
+     <div class="reel"><div class="spoke" id="reelB"><span style="transform:rotate(0)"></span><span style="transform:rotate(60deg)"></span><span style="transform:rotate(120deg)"></span></div></div>
+   </div>
+   <h2 style="margin-top:14px">◉ TELETYPE LOG</h2>
+   <div class="teletype" id="log"></div>
+   <div class="now" id="now"></div>
+  </div>
+
+  <!-- RIGHT: status -->
+  <div class="bay">
+   <h2>◉ STATUS PANEL</h2>
+   <div class="lamps">
+    <div class="lamp"><div class="bulb" id="L-power" style="--c:#33ff66"></div>POWER</div>
+    <div class="lamp"><div class="bulb" id="L-run" style="--c:#ffb000"></div>RUN</div>
+    <div class="lamp"><div class="bulb" id="L-pause" style="--c:#33b5ff"></div>HOLD</div>
+    <div class="lamp"><div class="bulb" id="L-net" style="--c:#7CFC00"></div>NET</div>
+    <div class="lamp"><div class="bulb" id="L-err" style="--c:#ff4444"></div>FAULT</div>
+   </div>
+
+   <div class="meter"><div class="m-top"><span>QUEUE PENDING</span><span class="m-val" id="v-pending">0</span></div>
+     <div class="m-track"><div class="m-fill" id="m-pending"></div></div></div>
+   <div class="meter"><div class="m-top"><span>PAGES ARCHIVED</span><span class="m-val" id="v-done">0</span></div>
+     <div class="m-track"><div class="m-fill" id="m-done"></div></div></div>
+   <div class="meter"><div class="m-top"><span>BLOB ASSETS</span><span class="m-val" id="v-assets">0</span></div>
+     <div class="m-track"><div class="m-fill" id="m-assets"></div></div></div>
+   <div class="meter"><div class="m-top"><span>FAILED</span><span class="m-val" id="v-failed">0</span></div>
+     <div class="m-track"><div class="m-fill" id="m-failed" style="background:linear-gradient(90deg,#ff7b6b,#c0291a)"></div></div></div>
+
+   <div class="statline">
+    <div>STATE <b id="s-state">IDLE</b></div>
+    <div>ENGINE <b id="s-engine">—</b></div>
+    <div>DATA <b id="s-bytes">0 B</b></div>
+   </div>
+   <div class="foot">VACUUM-TUBE LOGIC · 1958 · FOR AUTHORISED ARCHIVAL USE</div>
+  </div>
+ </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const fmtBytes=n=>{if(!n)return '0 B';const u=['B','KB','MB','GB','TB'];
+ let i=Math.floor(Math.log(n)/Math.log(1024));return (n/Math.pow(1024,i)).toFixed(1)+' '+u[i];};
+
+function bindSwitch(id){const el=$(id);el.addEventListener('click',()=>el.classList.toggle('on'));return el;}
+const swAssets=bindSwitch('sw-assets'), swHeadless=bindSwitch('sw-headless'),
+      swManual=bindSwitch('sw-manual');
+const swNetwork=$('sw-network');
+swNetwork.addEventListener('click',async()=>{
+  const enabled=!swNetwork.classList.contains('on');
+  swNetwork.classList.toggle('on',enabled);
+  const r=await fetch('/api/network',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({enabled})}).then(r=>r.json());
+  $('lan').textContent=enabled?('LAN ▸ '+r.lan_url):'';
+});
+
+function gather(){return{
+  root_url:$('root').value, max_depth:+$('depth').value, max_pages:+$('pages').value,
+  sleep:+$('sleep').value, jitter:+$('jitter').value, challenge_timeout:+$('chal').value,
+  max_attempts:+$('attempts').value, engine:$('engine').value,
+  assets:swAssets.classList.contains('on'), headless:swHeadless.classList.contains('on'),
+  manual_solve:swManual.classList.contains('on'),
+};}
+async function post(url,body){return fetch(url,{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}).then(r=>r.json());}
+
+$('b-start').onclick =()=>post('/api/start',{...gather(),mode:'resume'});
+$('b-new').onclick   =()=>{ if(confirm('Erase the current archive and start a NEW backup?'))
+                            post('/api/start',{...gather(),mode:'new'});};
+$('b-pause').onclick =()=>post('/api/pause');
+$('b-stop').onclick  =()=>post('/api/stop');
+$('b-rebuild').onclick=async()=>{const r=await post('/api/rebuild');};
+$('b-open').onclick  =()=>window.open('/archive/','kiwieater_archive');
+
+setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString();},1000);
+
+/* oscilloscope: amplitude tracks live crawl activity */
+const cv=$('scope'),cx=cv.getContext('2d');
+function sizeScope(){cv.width=cv.clientWidth;cv.height=cv.clientHeight;}
+window.addEventListener('resize',sizeScope);sizeScope();
+let activity=0, phase=0;
+function drawScope(){
+ const w=cv.width,h=cv.height;cx.clearRect(0,0,w,h);
+ cx.strokeStyle='#0c3a1c';cx.lineWidth=1;
+ for(let x=0;x<w;x+=w/12){cx.beginPath();cx.moveTo(x,0);cx.lineTo(x,h);cx.stroke();}
+ for(let y=0;y<h;y+=h/6){cx.beginPath();cx.moveTo(0,y);cx.lineTo(w,y);cx.stroke();}
+ cx.beginPath();cx.strokeStyle='#33ff66';cx.lineWidth=2;cx.shadowColor='#33ff66';cx.shadowBlur=8;
+ const amp=(h/2-10)*(0.12+activity*0.85);
+ for(let x=0;x<=w;x++){
+   const t=x/w*Math.PI*6+phase;
+   const y=h/2+Math.sin(t)*amp*(0.6+0.4*Math.sin(t*0.5+phase*0.7))
+          +(activity>0?(Math.random()-0.5)*activity*6:0);
+   x===0?cx.moveTo(x,y):cx.lineTo(x,y);
+ }
+ cx.stroke();cx.shadowBlur=0;
+ phase+=0.04+activity*0.22; activity*=0.96;
+ requestAnimationFrame(drawScope);
+}
+drawScope();
+
+const reelA=$('reelA'),reelB=$('reelB');
+function setReels(state){
+ [reelA,reelB].forEach(r=>{r.classList.remove('spinning','fast');
+   if(state==='running'){r.classList.add('spinning','fast');}
+   else if(state==='paused'){r.classList.add('spinning');}});
+}
+
+let lastLogLen=0, maxSeen={pending:1,done:1,assets:1,failed:1};
+function setMeter(id,val,key){
+ maxSeen[key]=Math.max(maxSeen[key],val,1);
+ $('m-'+id).style.width=Math.min(100,val/maxSeen[key]*100)+'%';
+ $('v-'+id).textContent=val;
+}
+async function poll(){
+ try{
+  const s=await fetch('/api/status').then(r=>r.json());
+  const st=s.state||'idle', stats=s.stats||{};
+  $('s-state').textContent=st.toUpperCase();
+  $('s-engine').textContent=(s.engine||'—');
+  $('s-bytes').textContent=fmtBytes(stats.bytes||0);
+  setMeter('pending',stats.pending||0,'pending');
+  setMeter('done',stats.done||0,'done');
+  setMeter('assets',stats.assets||0,'assets');
+  setMeter('failed',stats.failed||0,'failed');
+  $('now').textContent=s.current_url?('▸ '+s.current_url):'';
+
+  $('L-power').classList.add('on');
+  $('L-run').classList.toggle('on',st==='running');
+  $('L-run').classList.toggle('blink',st==='running');
+  $('L-pause').classList.toggle('on',st==='paused');
+  $('L-net').classList.toggle('on',!!s.network_enabled);
+  $('L-err').classList.toggle('on',st==='error');
+  $('L-err').classList.toggle('blink',st==='error');
+  swNetwork.classList.toggle('on',!!s.network_enabled);
+
+  setReels(st);
+  $('scopelabel').textContent =
+    st==='running'?'ARCHIVING…':st==='paused'?'HOLD':st==='error'?'FAULT':'STANDBY';
+  $('b-pause').disabled = st!=='running';
+  $('b-stop').disabled  = !(st==='running'||st==='paused');
+
+  const lg=s.log||[];
+  if(lg.length!==lastLogLen){
+   activity=1;
+   const box=$('log');
+   box.innerHTML=lg.map(e=>`<div class="l-${e.level}"><span class="ts">${e.ts}</span> `
+     +`[${e.level}] ${(e.msg||'').replace(/</g,'&lt;')}</div>`).join('');
+   box.scrollTop=box.scrollHeight;lastLogLen=lg.length;
+  }
+ }catch(e){}
+}
+setInterval(poll,1000);poll();
+
+fetch('/api/config').then(r=>r.json()).then(c=>{
+ if(c.default_root)$('root').value=c.default_root;
+ if(!c.engines_available.playwright){
+   [...$('engine').options].find(o=>o.value==='playwright').disabled=true;}
+ if(!c.engines_available.selenium){
+   [...$('engine').options].find(o=>o.value==='selenium').disabled=true;}
+ swNetwork.classList.toggle('on',!!c.network_enabled);
+ if(c.network_enabled)$('lan').textContent='LAN ▸ '+c.lan_url;
+ if(c.resume_available)$('b-start').textContent='▶ RESUME PENDING';
+});
+</script>
+</body></html>

@@ -1,0 +1,12 @@
+# KiwiEater — runtime dependencies (real libraries only)
+flask>=2.2
+beautifulsoup4>=4.11
+lxml>=4.9
+requests>=2.28
+
+# Preferred real-browser engine that clears the Kiwiflare proof-of-work gate.
+# After installing, fetch the browser binary once:  playwright install chromium
+playwright>=1.40
+
+# Optional alternative engine (uncomment to use Selenium + a local Chrome):
+# selenium>=4.10

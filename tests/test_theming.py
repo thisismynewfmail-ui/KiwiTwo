@@ -182,5 +182,66 @@ class CrawlerAssetHarvest(unittest.TestCase):
         self.assertTrue(self.store.has_asset(late))
 
 
+class ViewerThemePackaging(unittest.TestCase):
+    """The archive must carry, and the viewer must apply, the 1950s theme — this
+    is what makes a backup themed instead of skeletal/white."""
+
+    _CFG_KEYS = ("DATA_DIR", "PROFILE_DIR", "LOG_DIR", "STATE_DB",
+                 "ARCHIVE_DIR", "PAGES_DIR", "BLOBS_DIR", "VIEWER_DIR",
+                 "MANIFEST_PATH", "SEARCH_INDEX_PATH", "GALLERY_PATH",
+                 "BLOB_INDEX_PATH")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kiwi-viewer-")
+        self._saved = {k: getattr(config, k) for k in self._CFG_KEYS}
+        _point_config_at(self.tmp)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(config, k, v)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _read(self, name):
+        with open(os.path.join(config.VIEWER_DIR, name), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_theme_is_bundled_into_the_archive(self):
+        from kiwieater.archive_builder import ArchiveBuilder
+        ArchiveBuilder(store=None)._sync_viewer()
+        # Every file the offline viewer needs travels into the backup, including
+        # the theme stylesheet — the backup is openable on its own.
+        for name in ("index.html", "viewer.js", "viewer.css",
+                     "archive-theme.css"):
+            self.assertTrue(
+                os.path.isfile(os.path.join(config.VIEWER_DIR, name)),
+                "viewer bundle missing " + name)
+
+    def test_theme_is_1950s_and_styles_xenforo_structure(self):
+        from kiwieater.archive_builder import ArchiveBuilder
+        ArchiveBuilder(store=None)._sync_viewer()
+        theme = self._read("archive-theme.css")
+        # Retro mainframe palette + identity (matches the console aesthetic).
+        self.assertIn("--ke-amber", theme)
+        self.assertRegex(theme.lower(), r"1950s|mainframe|phosphor")
+        # Fleshed-out, not skeletal: the XenForo structures KiwiFarms uses are
+        # actually given styling, so threads/forums/posts render deliberately.
+        for sel in (".p-nav", ".block-header", ".structItem", ".message",
+                    ".bbWrapper", ".pageNav"):
+            self.assertIn(sel, theme)
+
+    def test_viewer_drops_site_css_and_injects_the_theme(self):
+        from kiwieater.archive_builder import ArchiveBuilder
+        ArchiveBuilder(store=None)._sync_viewer()
+        js = self._read("viewer.js")
+        # The viewer fetches the bundled theme and injects it into each page…
+        self.assertIn("archive-theme.css", js)
+        self.assertIn("ke-archive-theme", js)
+        # …and removes the live site's own stylesheets so a page can't be white.
+        self.assertIn("link[rel~='stylesheet']", js)
+        # The old white content frame is gone (the regression in the report).
+        css = self._read("viewer.css")
+        self.assertNotIn("background:#fff", css)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

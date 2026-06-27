@@ -2,10 +2,13 @@
  *
  * Loads the portable JSON backup (manifest / blob index / search / gallery)
  * and renders it as a navigable site: each page is shown in an isolated iframe
- * so the original site's own stylesheets and navigation buttons work, while the
- * KiwiEater chrome stays untouched. Internal links are rewritten to in-archive
- * routes; images/media/CSS are rewritten to the on-disk BLOB files; external
- * content is never loaded. Works as plain static files served over HTTP. */
+ * so the site's own navigation buttons work while the KiwiEater chrome stays
+ * untouched. Each archived page is re-themed with the bundled KiwiEater 1950s
+ * mainframe stylesheet (archive-theme.css) instead of the live site's own CSS,
+ * so the backup is always fully themed rather than skeletal/white. Internal
+ * links are rewritten to in-archive routes; images/media are rewritten to the
+ * on-disk BLOB files; external content is never loaded. Works as plain static
+ * files served over HTTP. */
 
 (function () {
   "use strict";
@@ -13,6 +16,8 @@
   // Archive root is the parent of this viewer directory.
   var ARCHIVE = new URL("../", location.href).href;
   var TOPURL = location.href.split("#")[0];
+  // Viewer directory — where the bundled archive theme lives next to this file.
+  var VIEWER = new URL("./", TOPURL).href;
 
   var PLACEHOLDER =
     "data:image/svg+xml;utf8," + encodeURIComponent(
@@ -113,6 +118,26 @@
       .catch(function () { return ""; });
   }
 
+  // The KiwiEater archive theme that travels with every backup.  Fetched once
+  // and cached; a compact embedded fallback guarantees a page is never rendered
+  // white/unthemed even if archive-theme.css somehow can't be loaded.
+  var FALLBACK_THEME =
+    "html{background:#0c0a09}body{max-width:1180px;margin:0 auto;" +
+    "background:#15110e;color:#e9ddc4;font-family:'Courier New',monospace;" +
+    "font-size:15px;line-height:1.6;padding:18px 26px}" +
+    "a{color:#7fe0a0}h1,h2,h3,h4,h5,h6{color:#ffb000}" +
+    "img{max-width:100%;height:auto}" +
+    ".block,.message,.structItem,.node{background:#1b1714;" +
+    "border:1px solid #473f37;border-radius:8px;margin:0 0 14px;padding:12px}";
+  var themeCss = null;
+  function getTheme() {
+    if (themeCss != null) return Promise.resolve(themeCss);
+    return fetchText(VIEWER + "archive-theme.css").then(function (t) {
+      themeCss = (t && t.length) ? t : FALLBACK_THEME;
+      return themeCss;
+    });
+  }
+
   // Rewrite every url(...) in a chunk of CSS to its on-disk BLOB (resolved
   // against the stylesheet's own address).  Refs that were never archived fall
   // back to a placeholder so the sandboxed page never reaches out to the live
@@ -127,49 +152,25 @@
       });
   }
 
-  // Fully localise a stylesheet: pull its text, inline every @import
-  // recursively, then rewrite url(...) refs to BLOBs — yielding self-contained
-  // CSS safe to drop into a <style> inside the sandboxed iframe (relative url()
-  // resolution doesn't work against about:srcdoc, so everything must be
-  // absolute BLOB URLs).
-  function localizeCss(blobUrl, baseHref, seen) {
-    seen = seen || {};
-    if (seen[blobUrl]) return Promise.resolve("");   // guard @import cycles
-    seen[blobUrl] = true;
-    return fetchText(blobUrl).then(function (css) {
-      var jobs = [];
-      var importRe =
-        /@import\s+(?:url\(\s*(['"]?)([^)'"]+)\1\s*\)|(['"])([^'"]+)\3)\s*[^;]*;/gi;
-      css = css.replace(importRe, function (m, q1, u1, q2, u2) {
-        var ref = (u1 || u2 || "").trim();
-        var token = "IMP" + jobs.length + "";
-        var abs = ref ? absUrl(ref, baseHref) : null;
-        var b = abs ? blobFor(abs) : null;
-        jobs.push(b ? localizeCss(b, abs, seen)
-                        .then(function (t) { return [token, t]; })
-                    : Promise.resolve([token, ""]));
-        return token;
-      });
-      css = rewriteCssUrls(css, baseHref);
-      return Promise.all(jobs).then(function (parts) {
-        parts.forEach(function (p) { css = css.split(p[0]).join(p[1]); });
-        return css;
-      });
-    });
-  }
-
-  // Returns a Promise of the rewritten document HTML.  Stylesheets are turned
-  // into self-contained inline <style> blocks (async); everything else is
-  // rewritten in place.
-  function rewriteDoc(doc, pageUrl) {
+  // Rewrite a parsed archived document for offline, in-archive viewing and
+  // return its HTML (Promise, for a uniform call site).  The live site's own
+  // stylesheets are dropped and the KiwiEater archive theme is injected, so the
+  // page always renders in the 1950s console look instead of depending on
+  // (often un-captured) site CSS.  Images/media point at on-disk BLOBs and
+  // links at in-archive routes.
+  function rewriteDoc(doc, pageUrl, theme) {
     var base = pageUrl || manifest.root_url;
 
-    Array.prototype.forEach.call(doc.querySelectorAll("script,noscript"),
+    // Strip scripts and the site's own stylesheets — the archive theme replaces
+    // them, so captured-or-not site CSS can never leave a page white/skeletal.
+    Array.prototype.forEach.call(
+      doc.querySelectorAll("script,noscript,link[rel~='stylesheet']"),
       function (n) { n.remove(); });
-
-    // Inline <style> blocks and style="" attributes carry url() theme refs too.
+    // Drop page <style> blocks too (but keep any inside inline <svg> icons) so
+    // site rules can't fight the theme; inline style="" is kept (it may carry
+    // per-element url() backgrounds, localised below).
     Array.prototype.forEach.call(doc.querySelectorAll("style"), function (s) {
-      s.textContent = rewriteCssUrls(s.textContent || "", base);
+      if (!s.closest || !s.closest("svg")) s.remove();
     });
     Array.prototype.forEach.call(doc.querySelectorAll("[style]"), function (el) {
       var v = el.getAttribute("style");
@@ -216,26 +217,19 @@
       }
     });
 
-    // Stylesheets: replace each <link> with a self-contained inlined <style> so
-    // the archived theme (and its fonts/sprites/backgrounds) renders offline.
-    var links = Array.prototype.slice.call(
-      doc.querySelectorAll("link[rel~='stylesheet'][href]"));
-    var cssJobs = links.map(function (l) {
-      var href = absUrl(l.getAttribute("href"), base);
-      var b = blobFor(href);
-      if (!b) { if (l.parentNode) l.parentNode.removeChild(l);
-                return Promise.resolve(); }
-      return localizeCss(b, href, {}).then(function (css) {
-        var style = doc.createElement("style");
-        style.setAttribute("data-ke-href", href);
-        style.textContent = css;
-        if (l.parentNode) l.parentNode.replaceChild(style, l);
-      });
-    });
+    // Inject the KiwiEater archive theme last so it wins the cascade and the
+    // captured page renders in the same 1950s look as the console.
+    var head = doc.head || doc.getElementsByTagName("head")[0];
+    if (!head) {
+      head = doc.createElement("head");
+      doc.documentElement.insertBefore(head, doc.documentElement.firstChild);
+    }
+    var style = doc.createElement("style");
+    style.id = "ke-archive-theme";
+    style.textContent = theme || FALLBACK_THEME;
+    head.appendChild(style);
 
-    return Promise.all(cssJobs).then(function () {
-      return "<!DOCTYPE html>" + doc.documentElement.outerHTML;
-    });
+    return Promise.resolve("<!DOCTYPE html>" + doc.documentElement.outerHTML);
   }
 
   function isInScope(url) {
@@ -285,13 +279,17 @@
       return;
     }
     status("Loading " + url + " …");
-    getJSON(meta.file).then(function (rec) {
+    // Load the page body and the archive theme together, then render the page
+    // into the iframe with the KiwiEater 1950s theme applied.
+    Promise.all([getJSON(meta.file), getTheme()]).then(function (res) {
+      var rec = res[0], theme = res[1];
       var doc = new DOMParser().parseFromString(rec.html || "", "text/html");
-      return rewriteDoc(doc, rec.url || url).then(function (html) {
+      return rewriteDoc(doc, rec.url || url, theme).then(function (html) {
         $("#ke-content").innerHTML =
           "<iframe id='ke-frame' sandbox='allow-same-origin allow-top-navigation " +
           "allow-popups allow-top-navigation-by-user-activation'" +
-          " style='width:100%;border:0;display:block;min-height:70vh'></iframe>";
+          " style='width:100%;border:0;display:block;min-height:70vh;" +
+          "background:#0c0a09'></iframe>";
         var frame = $("#ke-frame");
         frame.srcdoc = html;
         frame.onload = function () { fitFrame(frame); };

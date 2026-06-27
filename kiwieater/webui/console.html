@@ -136,6 +136,8 @@ button.key.full{grid-column:1/3}
    <h2>◉ ARCHIVE DIRECTIVES</h2>
    <div class="field"><label>TARGET ROOT (kiwifarms.st only)</label>
     <input id="root" value="https://kiwifarms.st/"></div>
+   <div class="field"><label>FOCUS SECTION — sub-path to spiderweb (blank = whole site)</label>
+    <input id="focus" placeholder="e.g. https://kiwifarms.st/forums/lolcows.16/"></div>
    <div class="row">
     <div class="field"><label>MAX DEPTH (trail / pages deep)</label><input id="depth" type="number" value="500" min="1"></div>
     <div class="field"><label>PAGE LIMIT (0 = ALL)</label><input id="pages" type="number" value="0" min="0"></div>
@@ -236,7 +238,8 @@ swNetwork.addEventListener('click',async()=>{
 });
 
 function gather(){return{
-  root_url:$('root').value, max_depth:+$('depth').value, max_pages:+$('pages').value,
+  root_url:$('root').value, focus_url:$('focus').value.trim(),
+  max_depth:+$('depth').value, max_pages:+$('pages').value,
   sleep:+$('sleep').value, jitter:+$('jitter').value, challenge_timeout:+$('chal').value,
   max_attempts:+$('attempts').value, engine:$('engine').value,
   assets:swAssets.classList.contains('on'), headless:swHeadless.classList.contains('on'),
@@ -334,6 +337,7 @@ setInterval(poll,1000);poll();
 
 fetch('/api/config').then(r=>r.json()).then(c=>{
  if(c.default_root)$('root').value=c.default_root;
+ if(c.settings&&c.settings.focus_url)$('focus').value=c.settings.focus_url;
  if(!c.engines_available.playwright){
    [...$('engine').options].find(o=>o.value==='playwright').disabled=true;}
  if(!c.engines_available.selenium){

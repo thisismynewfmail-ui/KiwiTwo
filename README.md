@@ -41,6 +41,38 @@ crawl resumes exactly where it left off.
 Set `PAGE LIMIT` to `0` to pull **all** pages (it is only a safety cap);
 otherwise the crawl stops after that many pages, still fully resumable.
 
+## Focusing on one section
+
+Leave **FOCUS SECTION** blank for a whole-site crawl. Put a sub-path there —
+e.g. `https://kiwifarms.st/forums/lolcows.16/` — to point the crawler at just
+that section. The focus is honoured without ever splitting the data: there is
+always **one** archive, and a focused crawl simply fills in part of it.
+
+- **The path leading to the section is archived first, so it can be navigated
+  to.** Before spiderwebbing the section, KiwiEater walks the breadcrumb chain
+  from the main page down to it and archives each step. Focusing on
+  `…/forums/lolcows.16/` on a fresh archive therefore saves
+  `https://kiwifarms.st/` first, then `https://kiwifarms.st/forums/`, then
+  begins crawling within `…/forums/lolcows.16/` — so in the saved copy you can
+  click from the main page straight down to the section, exactly like the live
+  site. (These ancestor pages are stored as **breadcrumbs**: archived for
+  navigation, but not themselves spiderwebbed.)
+
+- **The spiderweb stays inside the section.** From the focused section the crawl
+  follows its pages and the threads it contains, but does not climb back to the
+  main page or wander into sibling sections. Focusing on a single forum captures
+  that forum and its threads; focusing on `…/forums/` captures every forum and
+  their threads.
+
+- **Already-saved locations are detected, never re-copied.** Because everything
+  lives in one archive and the queue is persisted, changing the focus picks up
+  where the last crawl left off. Archive `…/forums/lolcows.16/` first, then set
+  the focus to `…/forums/` and the rest of the forums are crawled while
+  `lolcows.16` is recognised as already captured and skipped. Clear the focus
+  (back to `https://kiwifarms.st/`) and the rest of the whole site is crawled,
+  again aware of everything already saved. This is resume-safe across
+  pause/stop/restart and never produces a second backup or duplicate pages.
+
 ## Run
 
 ```bash
@@ -78,12 +110,12 @@ rework solves the gate instead, layering several real strategies
 run.py / app.py            launcher (auto-installs deps, opens the console)
 kiwieater/
   config.py                paths, constants, default settings
-  urls.py                  URL normalisation / scope rules
+  urls.py                  URL normalisation / scope / focus + breadcrumb rules
   logbook.py               ring-buffer + per-session file + DB logging
   storage.py               SQLite resume state + JSON/BLOB archive store
   cleaner.py               structural HTML cleaning
   browser.py               real-browser engine + Kiwiflare solver
-  crawler.py               section-aware spiderweb (depth-first, resumable) worker
+  crawler.py               section-aware spiderweb (depth-first, focusable, resumable) worker
   archive_builder.py       manifest / gallery / search + standalone viewer
   server.py                Flask console + archive routes
   webui/console.html       the in-universe 1950s console
@@ -147,9 +179,10 @@ theme then renders.
 
 - **In-universe 1950s computer:** oscilloscope tied to live crawl activity,
   spinning tape reels, status lamps, VU meters, and a teletype log.
-- **Directives:** target root, max depth (trail/pages deep), page limit
-  (`0 = ALL`), inter-page sleep + jitter, challenge wait, per-URL retries,
-  browser engine, headless toggle, BLOB capture, manual-solve toggle.
+- **Directives:** target root, focus section (a sub-path to spiderweb, blank =
+  whole site), max depth (trail/pages deep), page limit (`0 = ALL`), inter-page
+  sleep + jitter, challenge wait, per-URL retries, browser engine, headless
+  toggle, BLOB capture, manual-solve toggle.
 - **RESUME / RUN · NEW ARCHIVE · PAUSE · STOP · REBUILD INDEX · OPEN ARCHIVE.**
 - **Resume:** the work queue is persisted in SQLite and every page/BLOB is
   written atomically, so a stopped or crashed crawl resumes exactly where it

@@ -39,7 +39,8 @@ from .logbook import log, open_session_log
 from .browser import BrowserEngine
 from .cleaner import clean_html, extract_css_refs
 from .urls import (normalize_url, in_scope, looks_like_asset, section_key,
-                   split_pagination, next_page_url, is_thread, child_trail)
+                   split_pagination, next_page_url, is_thread, child_trail,
+                   within_focus, focus_chain, focus_path_of)
 
 
 def _is_stylesheet(content_type, url):
@@ -51,7 +52,7 @@ def _is_stylesheet(content_type, url):
     return path.endswith((".css", ".less"))
 
 
-def plan_children(url, depth, links, max_depth, is_known=None):
+def plan_children(url, depth, links, max_depth, is_known=None, focus_path=None):
     """Plan the ordered children to enqueue when expanding ``url`` — the core of
     the spiderweb traversal, kept pure so it can be reasoned about and tested.
 
@@ -69,6 +70,12 @@ def plan_children(url, depth, links, max_depth, is_known=None):
       so every thread on the current page is taken before advancing the listing
       — i.e. "finish this thread, back to the listing, next thread, … then the
       listing's next page, then the next forum".
+
+    * **Focused crawls stay inside their section.**  When ``focus_path`` is set,
+      descents that fall outside the focused section (climbing back to the
+      home/ancestor pages, sibling forums, threads of other forums) are dropped,
+      so the spiderweb explores only within the chosen section.  Pagination of
+      an in-focus page is always a same-section continuation and is kept.
     """
     is_known = is_known or (lambda u: False)
     section = section_key(url)
@@ -86,6 +93,8 @@ def plan_children(url, depth, links, max_depth, is_known=None):
         if nu in seen:
             continue
         seen.add(nu)
+        if not within_focus(url, nu, focus_path):
+            continue
         descents.append(nu)
 
     # A next page exists only if the section advertises one beyond the current.
@@ -140,25 +149,47 @@ class Crawler:
         if not root or not in_scope(root):
             return False, "Root URL must be on kiwifarms.st."
 
+        # Optional sub-section focus.  Treat a blank value, or the main page
+        # itself, as "no focus" (a whole-site crawl).
+        focus = normalize_url(merged.get("focus_url") or "") or None
+        if focus and not in_scope(focus):
+            return False, "Focus section must be on kiwifarms.st."
+        if focus and focus_path_of(focus) is None:
+            focus = None
+        self.settings["focus_url"] = focus or ""
+
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         open_session_log(self.session_id)
-        self.store.set_meta("settings", merged)
+        self.store.set_meta("settings", self.settings)
         self.store.set_meta("session_id", self.session_id)
         self.store.set_meta("root_url", root)
+        self.store.set_meta("focus_url", focus or "")
 
         if mode == "new":
             self.store.wipe_archive()
-            log("INFO", "Started a fresh archive (previous data cleared).")
-            self._seed_root(root)
+            self._seed(root, focus)
+            if focus:
+                log("INFO", f"Started a fresh archive focused on {focus} "
+                            "(archiving the path leading to it first).")
+            else:
+                log("INFO", "Started a fresh archive (previous data cleared).")
         else:
             recovered = self.store.requeue_processing()
+            pending_before = self.store.stats()["pending"]
+            # Re-seed idempotently so a newly chosen focus is honoured and any
+            # section saved only as a breadcrumb is re-opened — without wiping,
+            # so everything accumulates into the one archive.
+            self._seed(root, focus)
             pending = self.store.stats()["pending"]
-            if pending == 0:
-                self._seed_root(root)
-                log("INFO", "No pending work found; seeding from the main page.")
-            else:
-                log("INFO", f"Resuming spiderweb: {pending} URL(s) pending "
+            if focus:
+                log("INFO", f"Resuming archive, focused on {focus}: "
+                            f"{pending} URL(s) pending "
                             f"({recovered} recovered from an interrupted run).")
+            elif pending_before:
+                log("INFO", f"Resuming spiderweb: {pending_before} URL(s) pending "
+                            f"({recovered} recovered from an interrupted run).")
+            else:
+                log("INFO", "No pending work found; seeding from the main page.")
 
         self._pause.clear()
         self._stop.clear()
@@ -197,14 +228,39 @@ class Crawler:
                 "session_id": self.session_id,
                 "engine": (self.browser.kind if self.browser else None)}
 
-    def _seed_root(self, root):
-        """Seed the queue with the site's main page as the trail's origin, so the
-        archive's first page is the main page and every later URL hangs off it.
-        Depth is 1-based (main page = 1) so pagination depth matches the trail:
-        a thread reached via main→forum→subforum sits at depth 4, and its
-        ``page-65`` at depth 68."""
-        self.store.enqueue(root, 1, trail=config.ROOT_TRAIL, parent=None,
-                           section=section_key(root), page_no=1)
+    def _seed(self, root, focus=None):
+        """Seed the work queue.
+
+        With no focus this is just the site's main page (the trail's origin), so
+        the archive's first page is the main page and every later URL hangs off
+        it.  Depth is 1-based (main page = 1) so pagination depth matches the
+        trail: a thread reached via main→forum→subforum sits at depth 4, and its
+        ``page-65`` at depth 68.
+
+        With a focus it is the breadcrumb chain from the main page *down to* the
+        focused section — each ancestor archived but not spiderwebbed — followed
+        by the focused section itself, which is the node that spiderwebs.  So
+        focusing on ``…/forums/lolcows.16`` archives the main page, then
+        ``…/forums``, then crawls within ``…/forums/lolcows.16``; the saved copy
+        can then be navigated from the main page straight down to the section.
+
+        Re-seeding is idempotent: ancestors already archived are left untouched
+        and the focused section is re-opened only if it had been saved merely as
+        a breadcrumb — so changing focus accumulates into the one archive and
+        never duplicates it."""
+        chain = focus_chain(focus) if focus else [root]
+        trail = config.ROOT_TRAIL
+        parent = None
+        for i, u in enumerate(chain):
+            active = (i == len(chain) - 1)
+            self.store.enqueue(u, i + 1, trail=trail, parent=parent,
+                               section=section_key(u), page_no=1,
+                               breadcrumb=0 if active else 1)
+            parent = u
+            trail = child_trail(trail, 0)
+        # Make sure the active section actually expands, even if a previous,
+        # narrower crawl had archived it only as a breadcrumb.
+        self.store.reopen_active(chain[-1])
 
     # ------------------------------------------------------------------ #
     #  Worker thread
@@ -218,6 +274,8 @@ class Crawler:
         grab_assets = bool(s.get("assets", True))
         max_attempts = int(s.get("max_attempts", 4))
         root = self.store.get_meta("root_url", config.DEFAULT_ROOT)
+        # Bound of the focused section, or None for a whole-site crawl.
+        focus_path = focus_path_of(s.get("focus_url") or "")
 
         try:
             self.browser = BrowserEngine(
@@ -258,9 +316,11 @@ class Crawler:
 
                 url, depth, attempts = item["url"], item["depth"], item["attempts"]
                 trail = item.get("trail") or config.ROOT_TRAIL
+                is_breadcrumb = bool(item.get("breadcrumb"))
                 cap = max_pages or "∞"
                 self.current_url = url
-                log("INFO", f"[{processed+1}/{cap} depth={depth}] {url}")
+                tag = " (breadcrumb)" if is_breadcrumb else ""
+                log("INFO", f"[{processed+1}/{cap} depth={depth}]{tag} {url}")
 
                 try:
                     self._sync_cookies()
@@ -277,15 +337,21 @@ class Crawler:
                         if grab_assets and looks_like_asset(nu):
                             assets.add(nu)
 
-                    # Plan the spiderweb descent (pagination-aware, section-aware)
-                    # and enqueue children with materialised-path trails so the
-                    # depth-first order is reproduced — and resumable — from the
-                    # queue alone.
-                    children = plan_children(url, depth, links, max_depth,
-                                             is_known=self.store.is_known)
+                    # Plan the spiderweb descent (pagination-aware, section-aware,
+                    # focus-confined) and enqueue children with materialised-path
+                    # trails so the depth-first order is reproduced — and
+                    # resumable — from the queue alone.  Breadcrumb pages (the
+                    # ancestors on the path down to a focused section) are
+                    # archived but never expanded, so the focus stays put.
+                    if is_breadcrumb:
+                        children = []
+                    else:
+                        children = plan_children(
+                            url, depth, links, max_depth,
+                            is_known=self.store.is_settled, focus_path=focus_path)
                     for i, child in enumerate(children):
                         cu = child["url"]
-                        self.store.enqueue(
+                        self.store.enqueue_or_reopen(
                             cu, child["depth"], trail=child_trail(trail, i),
                             parent=url, section=section_key(cu),
                             page_no=split_pagination(cu)[1])

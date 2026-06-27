@@ -169,3 +169,80 @@ def child_trail(parent_trail, ordinal, width=6):
     resume order we want.  Fixed-width segments keep the lexical sort numeric.
     """
     return f"{parent_trail}.{int(ordinal):0{width}d}"
+
+
+# --------------------------------------------------------------------------- #
+#  Focused (sub-section) crawling
+#
+#  A "focus" lets the operator point the crawler at one section
+#  (``…/forums/lolcows.16``) instead of the whole site.  Two helpers make that
+#  work while keeping the saved copy naturally navigable and never duplicated:
+#
+#  * ``focus_chain`` gives the breadcrumb path from the main page down to the
+#    section, so those ancestor pages get archived first and the section can be
+#    reached by clicking through the backup exactly like the live site.
+#  * ``within_focus`` confines the spiderweb so it explores *inside* the focused
+#    section and does not climb back up to the home/ancestor pages or wander off
+#    into sibling sections.
+# --------------------------------------------------------------------------- #
+
+def host_root(url):
+    """The site's main-page/origin URL (``scheme://host``) for any in-scope URL,
+    normalised the same way every other key is (no path, no trailing slash)."""
+    p = urlparse(url)
+    return normalize_url(f"{p.scheme}://{p.netloc}/")
+
+
+def focus_chain(focus_url):
+    """Ordered ancestor chain from the main page down to ``focus_url`` inclusive.
+
+    Each step adds one path segment, so focusing on ``…/forums/lolcows.16``
+    yields ``[main page, …/forums, …/forums/lolcows.16]``.  Archiving the chain
+    before spiderwebbing the focus is what lets the saved copy be navigated
+    naturally from the main page straight down to the focused section.
+    """
+    base = section_key(focus_url)          # drop pagination + trailing slash
+    p = urlparse(base)
+    chain = [host_root(base)]
+    accum = ""
+    for seg in [s for s in p.path.split("/") if s]:
+        accum += "/" + seg
+        chain.append(normalize_url(f"{p.scheme}://{p.netloc}{accum}"))
+    return chain
+
+
+def focus_path_of(focus_url):
+    """The path that bounds a focused crawl (e.g. ``/forums/lolcows.16``), or
+    ``None`` for the main page / an empty focus — both of which mean "no focus,
+    crawl the whole site"."""
+    if not focus_url:
+        return None
+    path = urlparse(section_key(focus_url)).path
+    return path or None
+
+
+def within_focus(parent_url, child_url, focus_path):
+    """Confinement test for a *descent* (a link into a different section) while a
+    focus is active.  Returns ``True`` if ``child_url`` belongs inside the
+    focused section and so should be followed.
+
+    Kept inside the focus:
+
+    * a child whose section is the focus itself or sits beneath it in the URL
+      tree (this is what makes focusing on ``/forums`` pull in every
+      ``/forums/<slug>`` listing), and
+    * a thread linked from an in-focus *listing* (a forum/index): a forum's
+      threads live under ``/threads/`` yet are that forum's actual content.
+
+    Dropped: climbing back to the home/ancestor sections, wandering to sibling
+    forums, and threads linked from other threads — so the spiderweb stays put.
+    ``focus_path is None`` disables confinement (whole-site crawl).
+    """
+    if focus_path is None:
+        return True
+    child_path = urlparse(section_key(child_url)).path
+    if child_path == focus_path or child_path.startswith(focus_path + "/"):
+        return True
+    if not is_thread(parent_url) and is_thread(child_url):
+        return True
+    return False

@@ -140,6 +140,13 @@ CONTENT_TYPE_EXT = {
 
 DEFAULT_SETTINGS = {
     "root_url": DEFAULT_ROOT,
+    # Optional sub-section to focus on (e.g. ".../forums/lolcows.16/").  Blank
+    # means a whole-site crawl from the main page.  When set, the crawler first
+    # archives the path of pages leading down to it (main page -> /forums/ ->
+    # the section) as navigable "breadcrumbs", then spiderwebs *within* that
+    # section only — all into the same single archive, with already-saved
+    # locations detected and never duplicated.
+    "focus_url": "",
     # Trail length (main page = 1).  Because pagination deepens the trail one
     # page at a time, 500 means "dig up to ~500 pages deep within a section".
     "max_depth": 500,

@@ -68,7 +68,8 @@ class ArchiveStore:
                 CREATE TABLE IF NOT EXISTS queue(
                     url TEXT PRIMARY KEY, depth INTEGER, status TEXT,
                     attempts INTEGER DEFAULT 0, updated_at TEXT,
-                    trail TEXT, parent TEXT, section TEXT, page_no INTEGER DEFAULT 1
+                    trail TEXT, parent TEXT, section TEXT, page_no INTEGER DEFAULT 1,
+                    breadcrumb INTEGER DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS links(
                     src TEXT, dst TEXT, PRIMARY KEY(src, dst)
@@ -87,7 +88,8 @@ class ArchiveStore:
             # spiderweb crawl relies on exist even on a resumed legacy archive.
             self._migrate(c, "queue", {"trail": "TEXT", "parent": "TEXT",
                                        "section": "TEXT",
-                                       "page_no": "INTEGER DEFAULT 1"})
+                                       "page_no": "INTEGER DEFAULT 1",
+                                       "breadcrumb": "INTEGER DEFAULT 0"})
             self._migrate(c, "pages", {"trail": "TEXT", "parent": "TEXT",
                                        "section": "TEXT",
                                        "page_no": "INTEGER DEFAULT 1"})
@@ -140,13 +142,54 @@ class ArchiveStore:
     # ------------------------------------------------------------------ #
     #  Queue (resume engine)
     # ------------------------------------------------------------------ #
-    def enqueue(self, url, depth, trail="", parent=None, section="", page_no=1):
+    def enqueue(self, url, depth, trail="", parent=None, section="", page_no=1,
+                breadcrumb=0):
+        """Queue ``url`` if it is not already known.  ``breadcrumb=1`` marks a
+        page that should be archived for navigation but *not* spiderwebbed (an
+        ancestor on the path down to a focused section).  ``INSERT OR IGNORE``
+        keeps re-seeding idempotent — an already-known URL is left exactly as it
+        is, so changing focus accumulates into the one archive."""
         with self._lock, self._conn() as c:
             c.execute(
                 "INSERT OR IGNORE INTO queue"
-                "(url,depth,status,updated_at,trail,parent,section,page_no) "
-                "VALUES(?,?, 'pending', ?,?,?,?,?)",
-                (url, depth, _now(), trail, parent, section, page_no))
+                "(url,depth,status,updated_at,trail,parent,section,page_no,"
+                "breadcrumb) VALUES(?,?, 'pending', ?,?,?,?,?,?)",
+                (url, depth, _now(), trail, parent, section, page_no,
+                 1 if breadcrumb else 0))
+
+    def enqueue_or_reopen(self, url, depth, trail="", parent=None, section="",
+                          page_no=1):
+        """Queue a spiderweb child (always a fully-expandable, non-breadcrumb
+        node).  If the URL was previously archived only as a *breadcrumb* — saved
+        as a stepping-stone for an earlier focused crawl but never expanded — it
+        is re-opened so the broader crawl now reaching it explores it, reusing
+        the existing saved page rather than making a duplicate."""
+        with self._lock, self._conn() as c:
+            row = c.execute("SELECT breadcrumb FROM queue WHERE url=?",
+                            (url,)).fetchone()
+            if row is None:
+                c.execute(
+                    "INSERT INTO queue(url,depth,status,updated_at,trail,parent,"
+                    "section,page_no,breadcrumb) VALUES(?,?, 'pending', ?,?,?,?,?,0)",
+                    (url, depth, _now(), trail, parent, section, page_no))
+            elif row["breadcrumb"]:
+                c.execute("UPDATE queue SET breadcrumb=0, status='pending', "
+                          "updated_at=? WHERE url=?", (_now(), url))
+            # else: already a full (expandable) node — leave it untouched.
+
+    def reopen_active(self, url):
+        """Make ``url`` the live crawl front again if it had been archived merely
+        as a breadcrumb, so focusing on a section that was earlier only passed
+        through (e.g. focusing ``/forums`` after ``/forums/lolcows.16``, or
+        switching back to the whole site) actually expands it.  A node that is
+        already expandable (or in flight) is left as-is, so a plain resume never
+        needlessly re-fetches work that is already done."""
+        with self._lock, self._conn() as c:
+            row = c.execute("SELECT breadcrumb FROM queue WHERE url=?",
+                            (url,)).fetchone()
+            if row is not None and row["breadcrumb"]:
+                c.execute("UPDATE queue SET breadcrumb=0, status='pending', "
+                          "attempts=0, updated_at=? WHERE url=?", (_now(), url))
 
     def next_pending(self):
         # ``trail`` is a materialised path, so ordering by it lexically yields a
@@ -154,8 +197,8 @@ class ArchiveStore:
         # *same* order after a Stop/crash, which is what makes resume exact.
         with self._lock, self._conn() as c:
             row = c.execute(
-                "SELECT url,depth,attempts,trail,parent,section,page_no "
-                "FROM queue WHERE status='pending' "
+                "SELECT url,depth,attempts,trail,parent,section,page_no,"
+                "breadcrumb FROM queue WHERE status='pending' "
                 "ORDER BY (trail IS NULL), trail ASC, depth ASC, rowid ASC "
                 "LIMIT 1").fetchone()
             if row:
@@ -182,6 +225,17 @@ class ArchiveStore:
     def is_known(self, url):
         with self._conn() as c:
             return c.execute("SELECT 1 FROM queue WHERE url=?",
+                             (url,)).fetchone() is not None
+
+    def is_settled(self, url):
+        """True if ``url`` is already a full (expandable) queue node — queued,
+        in flight or done as part of a spiderweb.  Used to skip re-planning work
+        that is already covered.  A page saved only as a *breadcrumb* is **not**
+        settled: it still needs expanding if a crawl descends into it, which is
+        what lets a later, broader focus pick up where a narrower one left off
+        without ever duplicating the archive."""
+        with self._conn() as c:
+            return c.execute("SELECT 1 FROM queue WHERE url=? AND breadcrumb=0",
                              (url,)).fetchone() is not None
 
     # ------------------------------------------------------------------ #

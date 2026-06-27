@@ -112,7 +112,11 @@ CLEARANCE_COOKIES = ("cf_clearance", "kiwiflare", "kiwiflare_clearance",
                      "__ddg1_", "sssg_clearance")
 
 # Tags removed during structural cleaning (extraneous / unsafe / external).
-STRIP_TAGS = ("script", "noscript", "iframe", "embed", "object", "svg",
+# Note: inline <svg> is deliberately *kept* — the site logo and many UI icons
+# are inline vector sprites, so dropping them is what made backups look
+# skeletal.  Any <script> inside an <svg> is still removed (script is stripped
+# globally), so keeping the vector markup is safe.
+STRIP_TAGS = ("script", "noscript", "iframe", "embed", "object",
               "ins", "template")
 
 ASSET_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".svg",

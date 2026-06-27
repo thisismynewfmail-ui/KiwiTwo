@@ -9,6 +9,8 @@ URLs are absolutised (and kept absolute, in-scope) so the serving layer and the
 standalone viewer can localise them later without re-resolving against a base.
 """
 
+import re
+
 from bs4 import BeautifulSoup
 
 from . import config
@@ -21,6 +23,60 @@ _JUNK_IDCLASS = ("advert", "-ads", "ad-", "adsbygoogle", "analytics", "gtm-",
 
 _DROP_LINK_REL = ("preconnect", "dns-prefetch", "preload", "prefetch",
                   "modulepreload")
+
+# CSS reference parsers — used to pull every theme asset a stylesheet (or an
+# inline ``<style>`` / ``style=""``) pulls in: ``url(...)`` for fonts, icon
+# sprites, background textures and smilies, and ``@import`` for sub-stylesheets.
+_CSS_URL_RE = re.compile(r"""url\(\s*(['"]?)(?P<u>[^)'"]+)\1\s*\)""", re.I)
+_CSS_IMPORT_RE = re.compile(
+    r"""@import\s+(?:url\(\s*(['"]?)(?P<u1>[^)'"]+)\1\s*\)"""
+    r"""|(['"])(?P<u2>[^'"]+)\3)""", re.I)
+
+
+def _css_ref_ok(ref):
+    """Keep only refs we can localise: not data URIs, not bare svg fragments."""
+    ref = (ref or "").strip()
+    if not ref or ref.startswith(("data:", "#")):
+        return None
+    return ref
+
+
+def extract_css_refs(css_text, base_url):
+    """Return ``(imports, assets)``: the in-scope absolute URLs of ``@import``
+    targets and ``url(...)`` references in a chunk of CSS.
+
+    Both lists are de-duplicated and absolutised against ``base_url`` so the
+    crawler can fetch the fonts/sprites/backgrounds a theme depends on and the
+    viewer can localise them — without this, captured stylesheets reference
+    assets that were never archived and the page renders unthemed.
+    """
+    imports, assets, seen = [], [], set()
+    for m in _CSS_IMPORT_RE.finditer(css_text or ""):
+        ref = _css_ref_ok(m.group("u1") or m.group("u2"))
+        if not ref:
+            continue
+        u = normalize_url(ref, base_url)
+        if u and in_scope(u) and u not in seen:
+            seen.add(u)
+            imports.append(u)
+    for m in _CSS_URL_RE.finditer(css_text or ""):
+        ref = _css_ref_ok(m.group("u"))
+        if not ref:
+            continue
+        u = normalize_url(ref, base_url)
+        if u and in_scope(u) and u not in seen:
+            seen.add(u)
+            assets.append(u)
+    return imports, assets
+
+
+def _srcset_candidates(srcset):
+    """Yield the URL of each candidate in a ``srcset``/``data-srcset`` list,
+    dropping the width/density descriptor that follows it."""
+    for part in (srcset or "").split(","):
+        part = part.strip()
+        if part:
+            yield part.split()[0]
 
 
 def _soup(html):
@@ -58,12 +114,19 @@ def clean_html(html, base_url):
 
     asset_urls = set()
 
-    # Images: normalise lazy-load variants down to a single in-scope src.
+    # Images: normalise lazy-load variants (including srcset) to one in-scope src.
     for img in soup.find_all("img"):
         chosen = None
         for attr in ("src", "data-src", "data-url", "data-original"):
             if img.get(attr):
                 u = normalize_url(img[attr], base_url)
+                if u and in_scope(u):
+                    chosen = u
+                    break
+        if not chosen:
+            for cand in _srcset_candidates(img.get("srcset")
+                                           or img.get("data-srcset")):
+                u = normalize_url(cand, base_url)
                 if u and in_scope(u):
                     chosen = u
                     break
@@ -83,6 +146,19 @@ def clean_html(html, base_url):
             if u and in_scope(u):
                 media["src"] = u
                 asset_urls.add(u)
+        # <picture>/<source> responsive candidates: collapse to one in-scope URL.
+        if media.get("srcset"):
+            picked = None
+            for cand in _srcset_candidates(media["srcset"]):
+                u = normalize_url(cand, base_url)
+                if u and in_scope(u):
+                    picked = u
+                    break
+            if picked:
+                media["srcset"] = picked
+                asset_urls.add(picked)
+            else:
+                del media["srcset"]
         if media.get("poster"):
             u = normalize_url(media["poster"], base_url)
             if u and in_scope(u):
@@ -98,6 +174,17 @@ def clean_html(html, base_url):
                 asset_urls.add(u)
             else:
                 link.decompose()
+
+    # Inline <style> blocks and style="" attributes pull in theme assets via
+    # url(...)/@import too; harvest the in-scope ones so they are archived.
+    for style in soup.find_all("style"):
+        imp, refs = extract_css_refs(style.get_text() or "", base_url)
+        asset_urls.update(imp)
+        asset_urls.update(refs)
+    for el in soup.find_all(style=True):
+        imp, refs = extract_css_refs(el.get("style") or "", base_url)
+        asset_urls.update(imp)
+        asset_urls.update(refs)
 
     # Anchors: absolutise; record structure for navigation/audit.
     links = []

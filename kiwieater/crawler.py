@@ -37,9 +37,18 @@ import requests
 from . import config
 from .logbook import log, open_session_log
 from .browser import BrowserEngine
-from .cleaner import clean_html
+from .cleaner import clean_html, extract_css_refs
 from .urls import (normalize_url, in_scope, looks_like_asset, section_key,
                    split_pagination, next_page_url, is_thread, child_trail)
+
+
+def _is_stylesheet(content_type, url):
+    """True if a downloaded asset is CSS — by content-type (XenForo serves
+    themes from ``/css.php`` with ``text/css``) or by a ``.css``/``.less`` path."""
+    if content_type and "css" in content_type.lower():
+        return True
+    path = (url or "").split("?")[0].lower()
+    return path.endswith((".css", ".less"))
 
 
 def plan_children(url, depth, links, max_depth, is_known=None):
@@ -356,21 +365,62 @@ class Crawler:
         """Download in-scope media/assets as BLOB files via the requests session
         that shares the browser's clearance cookies, so downloads pass the gate
         without re-rendering each file.  Anything that returns an HTML challenge
-        shell instead of binary data is skipped rather than stored."""
-        for u in list(urls):
+        shell instead of binary data is skipped rather than stored.
+
+        Stylesheets are mined recursively: every downloaded CSS file is parsed
+        for ``@import`` and ``url(...)`` references (fonts, icon sprites,
+        background textures, smilies) and those are queued for download too, so
+        the archived theme is complete instead of a stylesheet pointing at
+        assets that were never saved.  A worklist + seen-set keeps the recursion
+        bounded and resume-safe (CSS already on disk is re-parsed for any new
+        references without being re-downloaded)."""
+        seen = set()
+        queue = list(urls)
+        while queue:
             if self._stop.is_set():
                 return
-            if not u or not in_scope(u) or self.store.has_asset(u):
+            u = queue.pop(0)
+            if not u or u in seen:
                 continue
-            try:
-                r = self.http.get(u, timeout=30, headers={"Referer": referer})
-                if r.status_code != 200 or not r.content:
+            seen.add(u)
+            if not in_scope(u):
+                continue
+
+            ct, data = None, None
+            if self.store.has_asset(u):
+                # Already saved: only pull the body back off disk when it's a
+                # stylesheet we still need to mine for dependencies on resume —
+                # never re-read large media just to type-check it.
+                ct = self.store.asset_content_type(u)
+                if _is_stylesheet(ct, u):
+                    got = self.store.get_asset(u)
+                    if got:
+                        ct, data = got
+            else:
+                try:
+                    r = self.http.get(u, timeout=30,
+                                      headers={"Referer": referer})
+                    if r.status_code != 200 or not r.content:
+                        continue
+                    ct = r.headers.get(
+                        "Content-Type",
+                        "application/octet-stream").split(";")[0].strip()
+                    if ct.startswith("text/html"):   # asset came back as a gate
+                        continue
+                    self.store.save_asset(u, ct, r.content, source_page=referer)
+                    data = r.content
+                except Exception as exc:
+                    log("WARNING", f"Asset failed {u}: {exc}")
                     continue
-                ct = r.headers.get("Content-Type",
-                                   "application/octet-stream").split(";")[0].strip()
-                if ct.startswith("text/html"):      # an asset came back as a gate
-                    continue
-                self.store.save_asset(u, ct, r.content, source_page=referer)
-            except Exception as exc:
-                log("WARNING", f"Asset failed {u}: {exc}")
-            time.sleep(0.05)        # gentle pacing so bursts don't trip limits
+                time.sleep(0.05)     # gentle pacing so bursts don't trip limits
+
+            # Follow a stylesheet's own dependencies (fonts/sprites/@imports).
+            if data and _is_stylesheet(ct, u):
+                try:
+                    imports, sub = extract_css_refs(
+                        data.decode("utf-8", "ignore"), u)
+                    for nu in imports + sub:
+                        if nu not in seen:
+                            queue.append(nu)
+                except Exception as exc:
+                    log("WARNING", f"CSS parse failed {u}: {exc}")

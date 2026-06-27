@@ -285,6 +285,15 @@ class ArchiveStore:
                        source_page, _now()))
         return rel
 
+    def asset_content_type(self, url):
+        """Return just the stored content-type for an asset (no body read), or
+        ``None``.  Lets the crawler decide whether a resumed asset is a
+        stylesheet worth re-parsing without loading large media off disk."""
+        with self._conn() as c:
+            row = c.execute("SELECT content_type FROM blobs WHERE url=?",
+                            (url,)).fetchone()
+        return row["content_type"] if row else None
+
     def get_asset(self, url):
         """Return ``(content_type, bytes)`` for a stored asset, or ``None``."""
         with self._conn() as c:

@@ -139,6 +139,19 @@ def _detect_chromium():
 
 CHROMIUM_PATH = _detect_chromium()
 
+
+def _clear_profile_locks():
+    """Remove stale single-instance lock files left by a crashed/closed Chrome
+    so a fresh launch can reclaim the persistent profile directory."""
+    import glob
+    for pat in ("SingletonLock", "SingletonCookie", "SingletonSocket",
+                "lockfile", "*.lock"):
+        for p in glob.glob(os.path.join(PROFILE_DIR, pat)):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
 # Strings that betray an anti-bot / proof-of-work interstitial.
 CHALLENGE_MARKERS = (
     "kiwiflare", "checking your browser", "just a moment",
@@ -585,8 +598,24 @@ class BrowserEngine:
         )
         if CHROMIUM_PATH:
             launch_kw["executable_path"] = CHROMIUM_PATH
-        self._ctx = self._pw.chromium.launch_persistent_context(
-            PROFILE_DIR, **launch_kw)
+        # The persistent profile can be held by a Chrome that has not finished
+        # exiting from a previous run; clear stale locks and retry so a quick
+        # Stop->Start does not fail with "browser has been closed".
+        last_exc = None
+        for attempt in range(3):
+            _clear_profile_locks()
+            try:
+                self._ctx = self._pw.chromium.launch_persistent_context(
+                    PROFILE_DIR, **launch_kw)
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                log("WARNING", f"Browser launch attempt {attempt+1}/3 failed "
+                               f"(profile busy?); retrying…")
+                time.sleep(2.5)
+        if last_exc:
+            raise last_exc
         # Hide the most obvious automation tell-tale.
         try:
             self._ctx.add_init_script(
@@ -620,12 +649,17 @@ class BrowserEngine:
             pass
 
     # -- navigation with challenge solving --------------------------------- #
-    def fetch(self, url, challenge_timeout=75, settle=1.2):
-        """Return rendered (html, title) after clearing any challenge gate."""
+    def fetch(self, url, challenge_timeout=75, settle=1.2, should_stop=None):
+        """Return rendered (html, title) after clearing any challenge gate.
+
+        ``should_stop`` is an optional callable; when it returns True the call
+        aborts promptly so the Stop button can interrupt an in-flight fetch
+        instead of leaving the browser open and holding the profile lock."""
+        stop = should_stop or (lambda: False)
         if self.kind == "playwright":
-            self._page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
         else:
-            self._driver.set_page_load_timeout(45)
+            self._driver.set_page_load_timeout(30)
             self._driver.get(url)
         time.sleep(settle)
         html, title = self._content()
@@ -636,7 +670,9 @@ class BrowserEngine:
             deadline = time.time() + challenge_timeout
             reloaded = False
             while time.time() < deadline:
-                time.sleep(2.5)
+                if stop():
+                    raise RuntimeError("stopped")
+                time.sleep(2.0)
                 html, title = self._content()
                 if not is_challenge_html(html, title):
                     log("INFO", "Challenge cleared.")
@@ -647,7 +683,7 @@ class BrowserEngine:
                     try:
                         if self.kind == "playwright":
                             self._page.reload(wait_until="domcontentloaded",
-                                              timeout=45000)
+                                              timeout=30000)
                         else:
                             self._driver.refresh()
                     except Exception:
@@ -785,6 +821,12 @@ class Crawler:
     def start(self, settings, mode="resume"):
         if self.state in ("running", "paused"):
             return False, "A crawl is already active."
+        # A just-stopped crawl may still be unwinding (closing its browser and
+        # releasing the profile lock). Refuse to launch a second browser on the
+        # same profile until the previous worker has fully exited.
+        if self.thread and self.thread.is_alive():
+            return False, ("Previous crawl is still shutting down — "
+                           "wait a moment and press RESUME / RUN again.")
 
         self.settings = settings
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -903,7 +945,8 @@ class Crawler:
 
                 try:
                     self._sync_cookies()
-                    html, title = self.browser.fetch(url)
+                    html, title = self.browser.fetch(
+                        url, should_stop=self._stop.is_set)
                     cleaned, text, assets = clean_html(html, url)
                     DB.save_page(url, title, cleaned, text, depth)
 
@@ -931,6 +974,11 @@ class Crawler:
                                 f"(+{new_links} links, {len(assets)} assets)")
 
                 except Exception as exc:
+                    # A Stop that interrupted the fetch must leave the URL
+                    # pending (not failed) and exit immediately without backoff.
+                    if self._stop.is_set():
+                        DB.mark(url, "pending")
+                        break
                     attempts += 1
                     if attempts >= max_attempts:
                         DB.mark(url, "failed", bump_attempt=True)
@@ -1173,6 +1221,8 @@ def api_start():
         "max_attempts": int(data.get("max_attempts", 3)),
     }
     ok, msg = CRAWLER.start(settings, mode=mode)
+    if not ok:
+        log("WARNING", msg)
     return jsonify({"ok": ok, "message": msg})
 
 

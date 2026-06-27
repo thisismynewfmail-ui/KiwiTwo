@@ -26,6 +26,15 @@ STORE = ArchiveStore()
 BUILDER = ArchiveBuilder(STORE)
 CRAWLER = Crawler(STORE, BUILDER)
 
+# Refresh the archive's bundled viewer from the live template on startup.  The
+# viewer is copied into every backup for offline portability, but that means a
+# fix to the viewer would otherwise stay invisible until the next full rebuild —
+# a restarted console must serve the corrected viewer, not a stale snapshot.
+try:
+    BUILDER._sync_viewer()
+except Exception:
+    pass
+
 NETWORK_ENABLED = {"on": False}
 LOCALHOST = {"127.0.0.1", "::1", "localhost"}
 
@@ -154,6 +163,25 @@ def archive_home():
         except Exception:
             pass
     return redirect("/archive/viewer/index.html")
+
+
+@app.route("/archive/viewer/")
+@app.route("/archive/viewer/<path:sub>")
+def archive_viewer(sub="index.html"):
+    """Serve the viewer's own files (index.html / viewer.js / viewer.css) from
+    the *live* template directory so corrections to the viewer take effect the
+    moment the console restarts — no full rebuild required — falling back to the
+    copy bundled inside the archive for anything the template lacks.
+
+    The archive's data (manifest, page JSON, BLOBs) is still served by
+    ``archive_file`` below; only the viewer chrome is sourced from the template.
+    """
+    for root in (config.VIEWER_TEMPLATE_DIR, config.VIEWER_DIR):
+        full = os.path.normpath(os.path.join(root, sub))
+        if full.startswith(os.path.normpath(root)) and os.path.isfile(full):
+            directory, name = os.path.split(full)
+            return send_from_directory(directory, name)
+    abort(404)
 
 
 @app.route("/archive/<path:relpath>")

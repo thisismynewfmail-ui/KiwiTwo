@@ -43,16 +43,23 @@ class ArchiveBuilder:
 
         manifest = {
             "archive": "KiwiEater",
-            "format_version": 2,
+            "format_version": 3,
             "target": config.TARGET_HOST,
             "root_url": root,
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "session_id": session,
             "counts": {"pages": stats["pages"], "assets": stats["assets"],
                        "bytes": stats["bytes"]},
+            # Pages are listed in trail order (main page first, then each
+            # section as it was dived through), and each carries its trail /
+            # parent / section / page so the navigation structure is part of the
+            # portable backup — enough to audit coverage or resume from the
+            # files alone.
             "pages": [
                 {"url": p["url"], "title": p["title"] or p["url"],
                  "depth": p["depth"],
+                 "trail": p.get("trail"), "parent": p.get("parent"),
+                 "section": p.get("section"), "page_no": p.get("page_no"),
                  "file": p["file"].replace(os.sep, "/"),
                  "fetched_at": p["fetched_at"]}
                 for p in pages],

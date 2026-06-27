@@ -1,17 +1,30 @@
-"""Background crawl worker: pausable, stoppable, and reliably resumable.
+"""Background crawl worker: a section-aware, spiderwebbing, resumable scrape.
 
-The crawler owns one browser, drains the persistent work queue breadth-first,
-cleans each page, writes it to the portable archive, harvests its in-scope
-links and BLOB assets, and rebuilds the navigation indexes when it finishes.
+The crawler owns one browser and drains a persistent work queue **depth-first**,
+following a section's trail to its end before backtracking — exactly how a
+person clicking the site's own buttons would explore it.  Starting at the main
+page it dives into a forum, then a thread, follows that thread's pagination all
+the way down (``…/page-2 → …/page-3 → …``), then unwinds to the listing and
+takes the next thread, then the next forum, and so on.
 
-Resilience is the whole point here:
+Two ideas make this work and make it resumable:
 
-* Every unit of work is a queue row in SQLite; a Stop/crash leaves the row as
-  ``pending`` (or recovers ``processing`` rows on the next start), so a resumed
-  run continues exactly where it left off.
-* Per-URL retries use exponential backoff with jitter.
-* Inter-page sleep + jitter, a warm-up handshake, persistent clearance cookies
-  and a shared ``requests`` session for assets all reduce timeouts and blocks.
+* **Dynamic, section-relative depth.**  Depth is the length of the navigation
+  *trail*, and each extra page of a section is one step deeper.  So
+  ``/threads/kino-casino.110845/page-65`` is 64 steps below the thread's first
+  page — its depth adapts to how deep its section sits.  A ``max_depth`` of 500
+  therefore means "dig up to 500 pages deep within a single subsection".
+
+* **A stored trail.**  Every queue row carries a materialised-path ``trail``;
+  ordering the queue by it reproduces the depth-first spiderweb *and*, because
+  the trail is persisted, the identical order after a Stop/crash.  That single
+  fact gives both full coverage and an exact resume.
+
+Resilience details: every unit of work is a queue row in SQLite (a Stop leaves
+it ``pending``; a crash leaves ``processing`` rows that the next start
+recovers); per-URL retries use exponential backoff with jitter; inter-page
+sleep, a warm-up handshake, persistent clearance cookies and a shared
+``requests`` session for assets all reduce timeouts and blocks.
 """
 
 import time
@@ -20,13 +33,70 @@ import threading
 from datetime import datetime
 
 import requests
-from bs4 import BeautifulSoup
 
 from . import config
 from .logbook import log, open_session_log
 from .browser import BrowserEngine
 from .cleaner import clean_html
-from .urls import normalize_url, in_scope, looks_like_asset
+from .urls import (normalize_url, in_scope, looks_like_asset, section_key,
+                   split_pagination, next_page_url, is_thread, child_trail)
+
+
+def plan_children(url, depth, links, max_depth, is_known=None):
+    """Plan the ordered children to enqueue when expanding ``url`` — the core of
+    the spiderweb traversal, kept pure so it can be reasoned about and tested.
+
+    Returns a list of ``{"url", "depth"}`` in the exact order they should be
+    queued.  Ordering by the resulting trails then yields the desired walk:
+
+    * **Pagination is a same-section continuation, not a branch.**  Other pages
+      of the current section (``/page-N``) are *not* queued individually; we
+      step exactly one page at a time so depth increases by one per page and the
+      whole section is crawled as one contiguous run.
+
+    * **Content sections dive, listings fan out.**  On a thread we put its next
+      page *first* so the thread is followed to its end before its outbound
+      links; on a forum/index listing we put the section's own next page *last*
+      so every thread on the current page is taken before advancing the listing
+      — i.e. "finish this thread, back to the listing, next thread, … then the
+      listing's next page, then the next forum".
+    """
+    is_known = is_known or (lambda u: False)
+    section = section_key(url)
+
+    seen = set()
+    same_section_pages = []     # page numbers this section advertises
+    descents = []               # ordered, de-duplicated links into other sections
+    for link in links:
+        nu = link.get("href")
+        if not nu or not in_scope(nu) or looks_like_asset(nu):
+            continue
+        if section_key(nu) == section:
+            same_section_pages.append(split_pagination(nu)[1])
+            continue
+        if nu in seen:
+            continue
+        seen.add(nu)
+        descents.append(nu)
+
+    # A next page exists only if the section advertises one beyond the current.
+    cur_page = split_pagination(url)[1]
+    max_advertised = max(same_section_pages) if same_section_pages else cur_page
+    next_pg = next_page_url(url) if max_advertised > cur_page else None
+
+    if is_thread(url):
+        ordered = ([next_pg] if next_pg else []) + descents
+    else:
+        ordered = descents + ([next_pg] if next_pg else [])
+
+    if depth + 1 > max_depth:
+        return []
+    children = []
+    for u in ordered:
+        if is_known(u):
+            continue
+        children.append({"url": u, "depth": depth + 1})
+    return children
 
 
 class Crawler:
@@ -70,15 +140,15 @@ class Crawler:
         if mode == "new":
             self.store.wipe_archive()
             log("INFO", "Started a fresh archive (previous data cleared).")
-            self.store.enqueue(root, 0)
+            self._seed_root(root)
         else:
             recovered = self.store.requeue_processing()
             pending = self.store.stats()["pending"]
             if pending == 0:
-                self.store.enqueue(root, 0)
-                log("INFO", "No pending work found; seeding from root.")
+                self._seed_root(root)
+                log("INFO", "No pending work found; seeding from the main page.")
             else:
-                log("INFO", f"Resuming: {pending} URL(s) pending "
+                log("INFO", f"Resuming spiderweb: {pending} URL(s) pending "
                             f"({recovered} recovered from an interrupted run).")
 
         self._pause.clear()
@@ -118,13 +188,22 @@ class Crawler:
                 "session_id": self.session_id,
                 "engine": (self.browser.kind if self.browser else None)}
 
+    def _seed_root(self, root):
+        """Seed the queue with the site's main page as the trail's origin, so the
+        archive's first page is the main page and every later URL hangs off it.
+        Depth is 1-based (main page = 1) so pagination depth matches the trail:
+        a thread reached via main→forum→subforum sits at depth 4, and its
+        ``page-65`` at depth 68."""
+        self.store.enqueue(root, 1, trail=config.ROOT_TRAIL, parent=None,
+                           section=section_key(root), page_no=1)
+
     # ------------------------------------------------------------------ #
     #  Worker thread
     # ------------------------------------------------------------------ #
     def _run(self):
         s = self.settings
-        max_depth = int(s.get("max_depth", 2))
-        max_pages = int(s.get("max_pages", 500))
+        max_depth = int(s.get("max_depth", config.DEFAULT_SETTINGS["max_depth"]))
+        max_pages = int(s.get("max_pages", config.DEFAULT_SETTINGS["max_pages"]))
         sleep_base = float(s.get("sleep", 3.0))
         jitter = float(s.get("jitter", 1.5))
         grab_assets = bool(s.get("assets", True))
@@ -159,18 +238,20 @@ class Crawler:
                     time.sleep(0.4)
                 if self._stop.is_set():
                     break
-                if processed >= max_pages:
+                if max_pages and processed >= max_pages:
                     log("INFO", f"Reached page limit ({max_pages}).")
                     break
 
                 item = self.store.next_pending()
                 if not item:
-                    log("INFO", "Queue empty, finished.")
+                    log("INFO", "Queue empty — full coverage reached.")
                     break
 
                 url, depth, attempts = item["url"], item["depth"], item["attempts"]
+                trail = item.get("trail") or config.ROOT_TRAIL
+                cap = max_pages or "∞"
                 self.current_url = url
-                log("INFO", f"[{processed+1}/{max_pages} depth={depth}] {url}")
+                log("INFO", f"[{processed+1}/{cap} depth={depth}] {url}")
 
                 try:
                     self._sync_cookies()
@@ -178,29 +259,41 @@ class Crawler:
                         url, should_stop=self._stop.is_set)
                     cleaned, text, assets, links = clean_html(html, url)
 
-                    new_links = 0
+                    # Record the link graph and harvest in-scope static assets.
                     for link in links:
-                        nu = link["href"]
+                        nu = link.get("href")
                         if not nu or not in_scope(nu):
                             continue
                         self.store.add_link(url, nu)
-                        if looks_like_asset(nu):
-                            if grab_assets:
-                                assets.add(nu)
-                            continue
-                        if depth + 1 <= max_depth and not self.store.is_known(nu):
-                            self.store.enqueue(nu, depth + 1)
-                            new_links += 1
+                        if grab_assets and looks_like_asset(nu):
+                            assets.add(nu)
 
-                    self.store.save_page(url, title, cleaned, text, depth,
-                                         links, assets)
+                    # Plan the spiderweb descent (pagination-aware, section-aware)
+                    # and enqueue children with materialised-path trails so the
+                    # depth-first order is reproduced — and resumable — from the
+                    # queue alone.
+                    children = plan_children(url, depth, links, max_depth,
+                                             is_known=self.store.is_known)
+                    for i, child in enumerate(children):
+                        cu = child["url"]
+                        self.store.enqueue(
+                            cu, child["depth"], trail=child_trail(trail, i),
+                            parent=url, section=section_key(cu),
+                            page_no=split_pagination(cu)[1])
+
+                    self.store.save_page(
+                        url, title, cleaned, text, depth, links, assets,
+                        trail=trail, parent=item.get("parent"),
+                        section=item.get("section") or section_key(url),
+                        page_no=item.get("page_no") or split_pagination(url)[1])
                     if grab_assets:
                         self._grab_assets(assets, url)
 
                     self.store.mark(url, "done")
                     processed += 1
                     log("INFO", f"Saved '{(title or url)[:70]}' "
-                                f"(+{new_links} links, {len(assets)} assets)")
+                                f"(+{len(children)} trail links, "
+                                f"{len(assets)} assets)")
 
                 except Exception as exc:
                     if self._stop.is_set():

@@ -115,6 +115,29 @@ because internal links are rewritten to in-archive routes. Images/media/CSS
 load from the saved BLOB files in their original places; external content is
 never loaded.
 
+### A fully themed, self-contained backup
+
+A captured page looks the way it did on the site rather than skeletal HTML
+because the **whole theme travels with the data**:
+
+- **The theme's own dependencies are archived.** Every stylesheet is parsed
+  (`@import` and `url(...)`) and the fonts, icon sprites, background textures
+  and smilies it references are downloaded as BLOBs too — recursively, so an
+  `@import`ed sub-stylesheet's assets are captured as well. Without this a
+  saved stylesheet would point at assets that were never stored and the page
+  would render unstyled.
+- **Inline vector icons are kept.** The site logo and UI icons are inline
+  `<svg>`, so they are preserved (only `<script>` is ever stripped from them).
+- **The viewer localises everything.** When a page is shown, each stylesheet is
+  inlined with its `url(...)`/`@import` references rewritten to the on-disk
+  BLOBs (and inline `<style>`/`style=""` and `srcset`/`<picture>` references
+  too), so the archived theme renders offline and the page never reaches out to
+  the live site for a font, sprite or background.
+
+The page bodies themselves stay as `pages/<hash>.json` — the BLOBs hold the
+binary assets, and the JSON holds the cleaned structural HTML that references
+them.
+
 ## Console features (all wired to real actions)
 
 - **In-universe 1950s computer:** oscilloscope tied to live crawl activity,

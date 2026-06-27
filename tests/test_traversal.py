@@ -154,9 +154,33 @@ class PlanChildren(unittest.TestCase):
         # Threads first, listing's own next page last.
         self.assertEqual(kids, [threadA, threadB, page_url(SUBFORUM, 2)])
 
-    def test_depth_cap_blocks_descent(self):
-        links = _thread_page_links(THREAD, 65)
-        self.assertEqual(plan_children(THREAD, 500, links, 500), [])
+    def test_depth_cap_blocks_descents_but_not_pagination(self):
+        # At the depth cap, descents into *other* sections are blocked, but the
+        # current thread's pagination keeps going so coverage stays complete.
+        other = "https://kiwifarms.st/threads/other.999"
+        links = _thread_page_links(THREAD, 65) + [{"href": other}]
+        urls = [k["url"] for k in plan_children(THREAD, 500, links, 500)]
+        self.assertIn(THREAD + "/page-2", urls)   # pagination survives the cap
+        self.assertNotIn(other, urls)             # the descent is blocked by it
+
+    def test_thread_entered_at_last_page_steps_to_previous(self):
+        # Posts open on the most recent page; from the last page the systematic
+        # step is to the PREVIOUS page (…/page-700 -> …/page-699), walking down.
+        last = THREAD + "/page-700"
+        links = _thread_page_links(THREAD, 700)   # nav advertises pages 1..700
+        kids = [k["url"] for k in plan_children(last, 9, links, 500)]
+        self.assertEqual(kids[0], THREAD + "/page-699")   # descends
+        self.assertNotIn(THREAD + "/page-701", kids)      # nothing beyond the last
+
+    def test_post_anchor_is_not_queued_as_a_separate_page(self):
+        # A per-post permalink (…/page-700#post-N) must collapse onto its page.
+        anchor = THREAD + "/page-700#post-24855389"
+        self.assertEqual(urls.normalize_url(anchor), THREAD + "/page-700")
+        # Even handed an un-normalised anchor href, plan_children never emits one.
+        links = [{"href": anchor}, {"href": THREAD + "/page-701"}]
+        kids = [k["url"] for k in plan_children(THREAD + "/page-700", 9,
+                                                links, 500)]
+        self.assertTrue(all("#" not in u for u in kids), kids)
 
 
 class DepthExample(unittest.TestCase):
@@ -338,6 +362,80 @@ class ManifestOrder(unittest.TestCase):
                           THREAD + "/page-3", THREAD + "/page-4"])
         # Every page carries its stored trail (navigation structure in backup).
         self.assertTrue(all(p["trail"] for p in manifest["pages"]))
+
+
+class ThreadCoverage(unittest.TestCase):
+    """A thread must be archived in full — every page — by progressing through
+    it systematically, even when entered on its most recent page and even when
+    it is far longer than ``max_depth``."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kiwi-test-")
+        _point_config_at(self.tmp)
+        from kiwieater.storage import ArchiveStore
+        self.store = ArchiveStore()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _entered_at_last_page(self, pages):
+        """The forum links the thread at its *latest* page only (as KiwiFarms
+        does — posts open on the most recent page); every thread page shows the
+        full 1..N pagination nav."""
+        last = THREAD + f"/page-{pages}"
+
+        def link_map(url):
+            base, _ = split_pagination(url)
+            if url == HOME:
+                return [{"href": FORUM}]
+            if base == FORUM:
+                return [{"href": last}]
+            if base == THREAD:
+                return _thread_page_links(THREAD, pages)
+            return []
+        return FakeSite(link_map)
+
+    def test_full_coverage_from_last_page_even_past_depth_cap(self):
+        pages = 8
+        # max_depth 3 just reaches the thread (home=1, forum=2, thread=3) and is
+        # far below the page count, yet pagination must still cover every page.
+        order = run_crawl(self._entered_at_last_page(pages), self.store,
+                          max_depth=3)
+        seq = [u for u, _ in order]
+        self.assertEqual(seq[0], HOME)
+        self.assertEqual(seq[2], THREAD + f"/page-{pages}")     # entered last
+        self.assertEqual(seq[3], THREAD + f"/page-{pages - 1}")  # stepped down
+        # Every page 1..N archived exactly once (page 1 == the bare base URL).
+        expected_pages = [THREAD] + [THREAD + f"/page-{n}"
+                                     for n in range(2, pages + 1)]
+        for p in expected_pages:
+            self.assertEqual(seq.count(p), 1, p)
+        # …and the walk down is contiguous: page-8, page-7, …, page-2, page-1.
+        self.assertEqual(seq[2:2 + pages],
+                         [THREAD + f"/page-{n}" for n in range(pages, 1, -1)]
+                         + [THREAD])
+
+    def test_a_new_post_appending_a_page_mid_crawl_is_still_covered(self):
+        # The page count is re-read from each page, never cached, so a thread
+        # that grows while the backup runs is still completed in full.
+        visited = set()
+        state = {"pages": 3}
+
+        def link_map(url):
+            base, _ = split_pagination(url)
+            if url == HOME:
+                return [{"href": THREAD}]
+            if base == THREAD:
+                visited.add(split_pagination(url)[1])
+                if 2 in visited:        # a new post appends a page mid-crawl
+                    state["pages"] = 4
+                return _thread_page_links(THREAD, state["pages"])
+            return []
+        order = run_crawl(FakeSite(link_map), self.store)
+        crawled = [u for u, _ in order]
+        self.assertIn(THREAD + "/page-4", crawled)   # the appended page is caught
+        for n in range(2, 5):
+            self.assertEqual(crawled.count(THREAD + f"/page-{n}"), 1)
 
 
 # --------------------------------------------------------------------------- #

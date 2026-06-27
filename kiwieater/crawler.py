@@ -39,8 +39,8 @@ from .logbook import log, open_session_log
 from .browser import BrowserEngine
 from .cleaner import clean_html, extract_css_refs
 from .urls import (normalize_url, in_scope, looks_like_asset, section_key,
-                   split_pagination, next_page_url, is_thread, child_trail,
-                   within_focus, focus_chain, focus_path_of)
+                   split_pagination, next_page_url, page_url, is_thread,
+                   child_trail, within_focus, focus_chain, focus_path_of)
 
 
 def _is_stylesheet(content_type, url):
@@ -59,17 +59,25 @@ def plan_children(url, depth, links, max_depth, is_known=None, focus_path=None):
     Returns a list of ``{"url", "depth"}`` in the exact order they should be
     queued.  Ordering by the resulting trails then yields the desired walk:
 
-    * **Pagination is a same-section continuation, not a branch.**  Other pages
-      of the current section (``/page-N``) are *not* queued individually; we
-      step exactly one page at a time so depth increases by one per page and the
-      whole section is crawled as one contiguous run.
+    * **Pagination steps one page at a time and is never cut off.**  Other pages
+      of the current section (``/page-N``) are not queued all at once; we step to
+      an adjacent page so the section is crawled as one contiguous run.  A thread
+      opens on its *most recent* page, so we step to the **previous** page first
+      (``…/page-700 → …/page-699 → …``) and systematically walk down to page 1;
+      the next page is queued too when one is advertised, which covers a lower
+      entry point and any page a new post appends mid-crawl.  ``max_advertised``
+      is re-read from each page's own nav, so a page count that changes while the
+      backup runs is handled rather than cached.
 
-    * **Content sections dive, listings fan out.**  On a thread we put its next
-      page *first* so the thread is followed to its end before its outbound
-      links; on a forum/index listing we put the section's own next page *last*
-      so every thread on the current page is taken before advancing the listing
-      — i.e. "finish this thread, back to the listing, next thread, … then the
-      listing's next page, then the next forum".
+    * **Content sections dive, listings fan out.**  On a thread we put its
+      pagination *first* so the thread is followed to its end before its outbound
+      links; on a forum/index listing we put the section's own pagination *last*
+      so every thread on the current page is taken before advancing the listing.
+
+    * **Only descents into new sections consume depth.**  ``max_depth`` bounds
+      how far the crawl fans out (main → forum → sub-forum → thread); a section's
+      own pages are *exempt*, so even a thread hundreds of pages long is archived
+      in full instead of being truncated at the cap.
 
     * **Focused crawls stay inside their section.**  When ``focus_path`` is set,
       descents that fall outside the focused section (climbing back to the
@@ -84,7 +92,10 @@ def plan_children(url, depth, links, max_depth, is_known=None, focus_path=None):
     same_section_pages = []     # page numbers this section advertises
     descents = []               # ordered, de-duplicated links into other sections
     for link in links:
-        nu = link.get("href")
+        # Normalise here too (drops ``#post-NNN`` anchors and the like) so a
+        # per-post permalink collapses onto its page and is never queued or
+        # archived as a separate, duplicate page.
+        nu = normalize_url(link.get("href"))
         if not nu or not in_scope(nu) or looks_like_asset(nu):
             continue
         if section_key(nu) == section:
@@ -97,18 +108,28 @@ def plan_children(url, depth, links, max_depth, is_known=None, focus_path=None):
             continue
         descents.append(nu)
 
-    # A next page exists only if the section advertises one beyond the current.
+    # Step through the current section one page at a time, toward BOTH ends, so
+    # it is covered in full regardless of which page we entered on.  Threads open
+    # on the most recent page, so the previous page leads (a systematic walk down
+    # to page 1); the next page follows when one is advertised, picking up a lower
+    # entry point and any page a new post adds while the backup is running.
+    # ``max_advertised`` is re-derived from this page every call, never cached.
     cur_page = split_pagination(url)[1]
     max_advertised = max(same_section_pages) if same_section_pages else cur_page
+    prev_pg = page_url(section, cur_page - 1) if cur_page > 1 else None
     next_pg = next_page_url(url) if max_advertised > cur_page else None
+    pagination = [p for p in (prev_pg, next_pg) if p]
+
+    # Pagination is a same-section continuation and must NOT be cut off by the
+    # depth cap, or a long thread would be archived only part-way; only descents
+    # into other sections consume the structural depth budget.
+    capped_descents = descents if depth + 1 <= max_depth else []
 
     if is_thread(url):
-        ordered = ([next_pg] if next_pg else []) + descents
+        ordered = pagination + capped_descents
     else:
-        ordered = descents + ([next_pg] if next_pg else [])
+        ordered = capped_descents + pagination
 
-    if depth + 1 > max_depth:
-        return []
     children = []
     for u in ordered:
         if is_known(u):

@@ -16,20 +16,26 @@ The backup is built **programmatically**, starting from the site's main page and
 navigating with the site's own buttons, so coverage is complete and a stopped
 crawl resumes exactly where it left off.
 
-- **Spiderwebbing, depth-first.** From the main page it dives into a forum, then
-  a thread, follows that thread's pagination all the way down
-  (`…/page-2 → …/page-3 → …`), then **backtracks** to the listing and takes the
-  next thread, then the next forum — covering every page along every trail. For
-  example: it finishes every page of
-  `https://kiwifarms.st/threads/kino-casino.110845/`, returns to
-  `https://kiwifarms.st/threads/`, takes the next thread, and once that listing
-  is exhausted moves on to `https://kiwifarms.st/forums/lolcows.16/`, and so on.
+- **Spiderwebbing, depth-first, with complete pagination.** From the main page
+  it dives into a forum, then a thread, follows that thread **page by page to its
+  end**, then **backtracks** to the listing and takes the next thread, then the
+  next forum — covering every page along every trail. A thread opens on its
+  *most recent* page (e.g. `…/community-feature-submissions.114933/page-700`), so
+  the crawler steps systematically **backwards** through it
+  (`…/page-700 → …/page-699 → … → page 1`); it also follows the next page when
+  one is advertised, so a thread is fully captured no matter which page it was
+  entered on. The page count is re-read from each page as it goes, so a thread
+  that **gains a post (and a page) mid-backup** is still completed rather than
+  cut short. Per-post permalinks (`…/page-700#post-24855389`) collapse onto their
+  page — the `#post-…` anchor is dropped — so a post is never archived as a
+  separate, duplicate page.
 
-- **Dynamic, section-relative depth.** Depth is the length of the navigation
-  *trail*, and **each extra page of a section is one step deeper**. So with a
-  `MAX DEPTH` of 500 the crawler digs up to ~500 pages deep *within a single
-  subsection*. A thread reached via main → forum → sub-forum sits at depth 4 and
-  its `page-65` at depth **68** — the depth adapts to where each section lives.
+- **Section-relative depth that never truncates a section.** Depth is the length
+  of the navigation *trail*. `MAX DEPTH` bounds how far the crawl **fans out into
+  new sections** (main → forum → sub-forum → thread); a section's *own* pages are
+  **exempt from the cap**, so even a thread hundreds of pages long is archived in
+  full. A thread reached via main → forum → sub-forum sits at depth 4, and its
+  pages continue from there — `MAX DEPTH` will not stop a thread part-way.
 
 - **A stored trail.** Every queued URL carries a materialised-path `trail`;
   ordering the queue by it both produces the depth-first walk and — because the
@@ -180,9 +186,10 @@ theme then renders.
 - **In-universe 1950s computer:** oscilloscope tied to live crawl activity,
   spinning tape reels, status lamps, VU meters, and a teletype log.
 - **Directives:** target root, focus section (a sub-path to spiderweb, blank =
-  whole site), max depth (trail/pages deep), page limit (`0 = ALL`), inter-page
-  sleep + jitter, challenge wait, per-URL retries, browser engine, headless
-  toggle, BLOB capture, manual-solve toggle.
+  whole site), max depth (section fan-out; a section's own pages are never
+  capped), page limit (`0 = ALL`), inter-page sleep + jitter, challenge wait,
+  per-URL retries, browser engine, headless toggle, BLOB capture, manual-solve
+  toggle.
 - **RESUME / RUN · NEW ARCHIVE · PAUSE · STOP · REBUILD INDEX · OPEN ARCHIVE.**
 - **Resume:** the work queue is persisted in SQLite and every page/BLOB is
   written atomically, so a stopped or crashed crawl resumes exactly where it

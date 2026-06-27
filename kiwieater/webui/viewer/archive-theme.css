@@ -1,0 +1,238 @@
+/* KiwiEater archived-page theme — 1950s green-phosphor / amber mainframe.
+ *
+ * This stylesheet IS the theme that travels with every backup.  The viewer
+ * injects it into the sandboxed iframe that shows each archived page, so the
+ * captured copy of the site is rendered in the same retro console look as the
+ * KiwiEater software itself — rather than relying on the live site's own
+ * stylesheets (which are served from behind the Kiwiflare gate and often can't
+ * be captured, leaving pages white and skeletal).
+ *
+ * It styles plain HTML *and* the common XenForo structures KiwiFarms is built
+ * from (page nav, blocks, node/thread/forum listings, posts, pagination,
+ * bb-code), so an archived page looks fleshed-out and deliberate even though it
+ * no longer carries the original phosphor-less theme.  Unknown markup still
+ * falls back to the readable element-level styling below. */
+
+:root{
+  --ke-amber:#ffb000; --ke-amber-2:#d9920f; --ke-amber-dim:#caa24a;
+  --ke-green:#33ff66; --ke-green-2:#7CFC00; --ke-green-deep:#1f7a3a;
+  --ke-paper:#e9ddc4; --ke-paper-dim:#b4a587;
+  --ke-ink:#0c0a09; --ke-bg:#0c0a09; --ke-bg-2:#15110e;
+  --ke-panel:#1b1714; --ke-panel-2:#231d18;
+  --ke-edge:#473f37; --ke-edge-2:#2c2723;
+  --ke-link:#7fe0a0; --ke-red:#ff6b5b;
+}
+
+*{ box-sizing:border-box; }
+
+/* The "desk": a dark, faintly scan-lined surface behind the printout column.
+   (No min-height here: the viewer sizes the iframe to content, and forcing the
+   document to fill it would feed back into that auto-sizing.) */
+html{
+  background:
+    repeating-linear-gradient(transparent 0 3px, #00000024 3px 4px),
+    radial-gradient(circle at 28% -10%, #241e19 0, #130f0d 55%, #090706 100%);
+}
+
+/* The "printout": a centred monospace column the page is rendered onto. */
+body{
+  max-width:1180px; margin:0 auto;
+  background:linear-gradient(#16120f,#0e0b09);
+  border-left:1px solid var(--ke-edge-2);
+  border-right:1px solid var(--ke-edge-2);
+  box-shadow:0 0 50px #000;
+  color:var(--ke-paper);
+  font-family:'Courier New', ui-monospace, monospace;
+  font-size:15px; line-height:1.6;
+  padding:18px 26px 72px;
+  word-wrap:break-word; overflow-wrap:break-word;
+}
+
+/* ---- generic typography --------------------------------------------------- */
+h1,h2,h3,h4,h5,h6{
+  color:var(--ke-amber); font-weight:bold; letter-spacing:1px;
+  line-height:1.25; margin:1.1em 0 .5em; text-shadow:0 0 8px #ffb00033;
+}
+h1{ font-size:1.7em; } h2{ font-size:1.4em; } h3{ font-size:1.2em; }
+h1,h2{ border-bottom:1px solid var(--ke-edge); padding-bottom:.25em; }
+
+p{ margin:.6em 0; }
+a{ color:var(--ke-link); text-decoration:none; }
+a:hover{ color:#fff; text-decoration:underline; text-shadow:0 0 8px #33ff6655; }
+strong,b{ color:#fff; }
+small, .u-muted, .u-concealed, .message-userTitle, .structItem-parts,
+.node-meta, .pairs dt{ color:var(--ke-paper-dim); }
+hr{ border:0; border-top:1px dashed var(--ke-edge); margin:1.2em 0; }
+
+blockquote{
+  margin:1em 0; padding:.6em 1em;
+  border-left:3px solid var(--ke-amber); background:#00000033;
+  color:var(--ke-paper-dim);
+}
+code,kbd,samp{
+  font-family:inherit; background:#000; color:var(--ke-green);
+  padding:.05em .35em; border:1px solid var(--ke-edge-2); border-radius:3px;
+}
+pre{
+  background:#000; color:var(--ke-green); padding:12px;
+  border:1px solid var(--ke-edge); border-radius:6px; overflow:auto;
+}
+ul,ol{ padding-left:1.4em; } li{ margin:.2em 0; }
+img{ max-width:100%; height:auto; }
+figure{ margin:1em 0; }
+
+/* ---- tables --------------------------------------------------------------- */
+table{ border-collapse:collapse; width:100%; margin:1em 0; font-size:.95em; }
+th,td{
+  border:1px solid var(--ke-edge-2); padding:7px 9px;
+  text-align:left; vertical-align:top;
+}
+th{ background:#000; color:var(--ke-amber); letter-spacing:1px; }
+tr:nth-child(even) td{ background:#ffffff05; }
+
+/* ---- forms / buttons ------------------------------------------------------ */
+input,select,textarea{
+  font-family:inherit; font-size:.95em;
+  background:var(--ke-ink); color:var(--ke-amber);
+  border:1px solid var(--ke-edge); border-radius:4px; padding:6px 9px;
+}
+button, .button, .button--primary, input[type=submit], input[type=button]{
+  font-family:inherit; font-weight:bold; letter-spacing:1px; cursor:pointer;
+  color:#1a0f00; background:linear-gradient(#d9c7a3,#a8946c);
+  border:1px solid #0c0a08; border-radius:5px; padding:7px 14px;
+  box-shadow:0 2px 0 #5e5341, 0 3px 6px #0008; text-decoration:none;
+  display:inline-block;
+}
+button:hover, .button:hover{ filter:brightness(1.08); }
+.button--primary{ background:linear-gradient(#7CFC00,#2f9e00); color:#012600; }
+
+/* ======================================================================== */
+/*  XenForo (KiwiFarms) structural theming                                   */
+/* ======================================================================== */
+
+/* page nav / section links / breadcrumbs — the green status strip */
+.p-nav, .p-sectionLinks, .p-breadcrumbs, .breadcrumb, .blockMessage, .notice{
+  background:linear-gradient(#16341c,#0c1f12);
+  border:1px solid var(--ke-green-deep); border-radius:8px;
+  margin:0 0 16px; padding:9px 13px;
+}
+.p-nav-list, .p-sectionLinks-list, .p-breadcrumbs, .breadcrumb,
+.listInline, .menu-content > ul{
+  list-style:none; margin:0; padding:0;
+  display:flex; flex-wrap:wrap; gap:6px 16px;
+}
+.p-navEl-link, .p-sectionLinks a, .p-breadcrumbs a, .breadcrumb a{
+  color:var(--ke-green-2); text-transform:uppercase;
+  letter-spacing:1px; font-size:.9em;
+}
+.p-title-value, .p-header-logo, .p-description{ color:var(--ke-amber); }
+
+/* blocks / panels / posts — the console "cards" */
+.block, .block-container, .node, .structItem, .message, .bbCodeBlock,
+.contentRow, .blockMessage, .formRow{
+  background:linear-gradient(var(--ke-panel-2), var(--ke-panel));
+  border:1px solid var(--ke-edge); border-radius:8px;
+  box-shadow:inset 0 0 18px #00000088;
+  margin:0 0 14px; padding:0;
+}
+.block-header, .block-minorHeader, .block-tabHeader, .blockStatus,
+.sectionHeaders{
+  background:linear-gradient(#2a231c,#1d1813);
+  color:var(--ke-amber); font-weight:bold;
+  letter-spacing:2px; text-transform:uppercase;
+  padding:10px 14px; border-bottom:1px solid var(--ke-edge);
+}
+.block-body{ padding:4px 0; }
+.block-row, .block-row--separated{
+  padding:9px 14px; border-bottom:1px solid var(--ke-edge-2);
+}
+.block-footer{ padding:9px 14px; border-top:1px solid var(--ke-edge-2);
+  color:var(--ke-paper-dim); }
+
+/* node / thread / forum listing rows */
+.structItem, .contentRow{ display:block; padding:12px 14px; }
+.structItem-cell, .contentRow-main{ padding:2px 0; }
+.node-title a, .structItem-title a, .contentRow-title a, .title a{
+  color:var(--ke-green-2); font-weight:bold; font-size:1.05em;
+}
+.node-title, .structItem-title{ margin:0 0 2px; }
+.node-description, .structItem-minor, .listItem-extra, .u-dateTime{
+  color:var(--ke-paper-dim); font-size:.88em;
+}
+.node-extra, .node-stats, .structItem-cell--meta, .pairs{
+  color:var(--ke-paper-dim); font-size:.85em;
+}
+.node-icon i, .node-icon .fa{ color:var(--ke-green-deep); }
+
+/* posts */
+.message{ overflow:hidden; }
+.message-inner, .message-cell, .message-main, .message-content{ padding:0; }
+.message-user, .message-cell--user{
+  background:#00000033; padding:10px 14px;
+  border-bottom:1px solid var(--ke-edge-2);
+}
+.message-name a, .message-name .username, .username{
+  color:var(--ke-amber); font-weight:bold;
+}
+.message-userTitle{ font-size:.82em; }
+.message-attribution, .message-attribution-main{
+  padding:8px 14px; color:var(--ke-paper-dim); font-size:.85em;
+  border-bottom:1px solid var(--ke-edge-2);
+}
+.message-body, .bbWrapper, .message-content .message-userContent{
+  padding:8px 14px; line-height:1.7;
+}
+.message-signature{
+  margin:10px 14px 0; padding-top:8px;
+  border-top:1px dashed var(--ke-edge-2);
+  color:var(--ke-paper-dim); font-size:.9em;
+}
+.message-footer, .message-actionBar{ padding:8px 14px; }
+
+/* avatars */
+.avatar{ display:inline-block; border:1px solid var(--ke-edge);
+  border-radius:4px; overflow:hidden; }
+.avatar img{ display:block; }
+
+/* bb-code */
+.bbCodeBlock{ padding:0; }
+.bbCodeBlock-title, .bbCodeBlock-header{
+  background:#000; color:var(--ke-amber); font-size:.85em;
+  padding:6px 12px; border-bottom:1px solid var(--ke-edge);
+}
+.bbCodeBlock-content, .bbCodeSpoiler-content{ padding:10px 12px; }
+.bbCodeInline{ background:#000; color:var(--ke-green);
+  padding:.05em .35em; border-radius:3px; }
+.bbImage{ max-width:100%; height:auto; }
+
+/* pagination */
+.pageNav-main, .pageNav, .pageNavSimple{
+  display:flex; flex-wrap:wrap; gap:6px; list-style:none;
+  padding:0; margin:14px 0;
+}
+.pageNav-page a, .pageNav a, .pageNavSimple a{
+  display:inline-block; padding:5px 11px;
+  border:1px solid var(--ke-edge); border-radius:4px;
+  background:var(--ke-panel); color:var(--ke-green-2);
+}
+.pageNav-page--current a, .pageNav-page--current{
+  background:var(--ke-green-deep); color:#fff; border-color:var(--ke-green-deep);
+}
+
+/* labels / tags / misc */
+.label, .tagList .tag, .tag{
+  display:inline-block; padding:2px 8px; margin:1px;
+  border:1px solid var(--ke-edge); border-radius:3px;
+  background:#000; color:var(--ke-amber); font-size:.8em;
+}
+.actionBar, .buttonGroup, .button-group{
+  display:flex; gap:8px; flex-wrap:wrap; margin:10px 0;
+}
+.fauxBlockLink-blockLink{ color:var(--ke-green-2); }
+.tabs, .tabs-tab{ border-color:var(--ke-edge); }
+
+/* selection + scrollbars to match the console */
+::selection{ background:var(--ke-green-deep); color:#fff; }
+::-webkit-scrollbar{ width:11px; height:11px; }
+::-webkit-scrollbar-thumb{ background:var(--ke-edge); border-radius:5px; }
+::-webkit-scrollbar-track{ background:#000; }

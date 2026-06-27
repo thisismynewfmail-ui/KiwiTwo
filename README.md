@@ -117,26 +117,31 @@ never loaded.
 
 ### A fully themed, self-contained backup
 
-A captured page looks the way it did on the site rather than skeletal HTML
-because the **whole theme travels with the data**:
+A captured page renders as a fully themed page rather than skeletal white HTML
+because **the archive wears the KiwiEater 1950s theme itself** — it does not
+depend on re-capturing the live site's own stylesheets (those are served from
+behind the Kiwiflare gate and often can't be retrieved, which is exactly what
+left earlier backups unstyled):
 
-- **The theme's own dependencies are archived.** Every stylesheet is parsed
-  (`@import` and `url(...)`) and the fonts, icon sprites, background textures
-  and smilies it references are downloaded as BLOBs too — recursively, so an
-  `@import`ed sub-stylesheet's assets are captured as well. Without this a
-  saved stylesheet would point at assets that were never stored and the page
-  would render unstyled.
-- **Inline vector icons are kept.** The site logo and UI icons are inline
-  `<svg>`, so they are preserved (only `<script>` is ever stripped from them).
-- **The viewer localises everything.** When a page is shown, each stylesheet is
-  inlined with its `url(...)`/`@import` references rewritten to the on-disk
-  BLOBs (and inline `<style>`/`style=""` and `srcset`/`<picture>` references
-  too), so the archived theme renders offline and the page never reaches out to
-  the live site for a font, sprite or background.
+- **The theme travels with the data.** `viewer/archive-theme.css` — a
+  green-phosphor / amber mainframe stylesheet — is bundled into every backup
+  and injected into each page when it is viewed. It styles plain HTML *and* the
+  XenForo structures KiwiFarms is built from (page nav, blocks, node/thread/
+  forum listings, posts, pagination, bb-code), so a page looks fleshed-out and
+  deliberate, matching the console's own look.
+- **The site's own CSS is dropped, deterministically.** When a page is shown,
+  its `<link>`/`<style>` site stylesheets are removed and the archive theme is
+  injected last so it always wins — no white page is possible whether or not
+  any site CSS was captured.
+- **Assets and media are localised.** `<img>`/`<video>`/`<audio>` and
+  `srcset`/`<picture>` references (and `url(...)` in inline `style=""`) are
+  rewritten to the on-disk BLOB files, so images and media display from the
+  archive and the page never reaches out to the live site. Inline vector icons
+  (`<svg>` logo/UI sprites) are preserved.
 
 The page bodies themselves stay as `pages/<hash>.json` — the BLOBs hold the
-binary assets, and the JSON holds the cleaned structural HTML that references
-them.
+binary assets, and the JSON holds the cleaned structural HTML that the bundled
+theme then renders.
 
 ## Console features (all wired to real actions)
 

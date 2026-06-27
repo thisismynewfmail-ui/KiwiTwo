@@ -1,7 +1,9 @@
 /* KiwiEater standalone archive viewer — 1950s green-phosphor terminal theme.
-   The page-content area inherits the original site's own stylesheets so each
-   archived page looks the way it did on kiwifarms.st; this chrome is namespaced
-   under #ke-* with high specificity so site CSS cannot bleed into it. */
+   This file styles the viewer *chrome* (top bar, status line, index/gallery/
+   search views, footer); each archived page is rendered inside an iframe and
+   themed by the bundled archive-theme.css instead, so the captured copy of the
+   site wears the same 1950s mainframe look. Chrome is namespaced under #ke-*
+   with high specificity so nothing bleeds between the two. */
 
 :root { --ke-green:#7CFC00; --ke-dim:#9dff9d; --ke-bg:#021002; --ke-panel:#0c1b0c; }
 
@@ -32,7 +34,10 @@ body { background:var(--ke-bg); color:#bfeabf;
 #ke-status { font-size:11px; color:#4f8f4f; padding:4px 14px; min-height:14px;
   border-bottom:1px solid #0c2a0c; letter-spacing:1px; }
 
-#ke-content { background:#fff; color:#111; min-height:60vh; }
+/* The iframe carries its own dark archive theme; keep the frame dark too so
+   there is no white flash before/around a page loads. */
+#ke-content { background:var(--ke-bg); color:#bfeabf; min-height:60vh; }
+#ke-content #ke-frame { background:var(--ke-bg); }
 /* The index/gallery/search views we render ourselves stay on the dark theme. */
 #ke-content .ke-view { background:var(--ke-bg); color:#bfeabf;
   max-width:1150px; margin:0 auto; padding:26px; }

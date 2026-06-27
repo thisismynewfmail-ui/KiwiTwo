@@ -294,8 +294,12 @@ class Crawler:
         parent = None
         for i, u in enumerate(chain):
             active = (i == len(chain) - 1)
+            # Record the real page number — a thread can be the seed itself
+            # (root URL ``…/page-700``), and page_no drives both the saved
+            # metadata and the systematic walk down from a failed entry page.
             self.store.enqueue(u, i + 1, trail=trail, parent=parent,
-                               section=section_key(u), page_no=1,
+                               section=section_key(u),
+                               page_no=split_pagination(u)[1],
                                breadcrumb=0 if active else 1)
             parent = u
             trail = child_trail(trail, 0)
@@ -419,6 +423,16 @@ class Crawler:
                     if attempts >= max_attempts:
                         self.store.mark(url, "failed", bump_attempt=True)
                         log("ERROR", f"Giving up on {url}: {exc}")
+                        # Keep the systematic descent unbroken.  A thread is
+                        # walked newest-page-downward and each page is normally
+                        # queued by the *success* of the page above it, so a
+                        # single blocked page (a challenge/timeout) would
+                        # otherwise truncate the whole thread here and let the
+                        # crawl skip to another one — the "one page per thread"
+                        # cycling.  Still step to the previous page so the rest
+                        # of the thread is archived; the blocked page stays
+                        # ``failed`` and is retried on the next resume.
+                        self._continue_after_failure(item, depth, trail)
                     else:
                         self.store.mark(url, "pending", bump_attempt=True)
                         backoff = min(45, 2 ** attempts) + random.random()
@@ -455,6 +469,27 @@ class Crawler:
     # ------------------------------------------------------------------ #
     #  Helpers
     # ------------------------------------------------------------------ #
+    def _continue_after_failure(self, item, depth, trail):
+        """Step the systematic pagination walk past a page we had to give up on.
+
+        Pagination is normally chained — the previous page is enqueued only when
+        the current one is archived successfully — so a single blocked page would
+        otherwise strand every page below it and the crawl would move on to a
+        different thread, archiving just the one entry page of each.  When a page
+        with a previous page in its section is abandoned, we enqueue that previous
+        page directly (it is purely positional — ``…/page-(N-1)`` — and needs no
+        content from the failed page), so the thread keeps marching down to page 1
+        regardless of intermittent challenge/timeout failures.  De-duplicated by
+        ``enqueue_or_reopen``, so nothing already queued/archived is disturbed."""
+        # Derive both from the URL, the source of truth — the queued metadata can
+        # lag (the seed records page_no=1 even for a thread entered at /page-700).
+        section, page_no = split_pagination(item["url"])
+        if page_no > 1:
+            prev = page_url(section, page_no - 1)
+            self.store.enqueue_or_reopen(
+                prev, depth + 1, trail=child_trail(trail, 0),
+                parent=item["url"], section=section, page_no=page_no - 1)
+
     def _interruptible_sleep(self, seconds):
         slept = 0.0
         while slept < seconds and not self._stop.is_set():

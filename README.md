@@ -28,7 +28,12 @@ crawl resumes exactly where it left off.
   and when a thread **gains a post (and a new last page) after the crawl has
   already descended past the old end**, the crawl re-extends to that newest page
   and walks it back down — so a post made mid-backup is archived in full rather
-  than left off the end. Per-post permalinks (`…/page-700#post-24855389`) collapse onto their
+  than left off the end. The walk is also **unbroken by a blocked page**: the site
+  gates behind an anti-bot challenge, so an occasional page fetch fails, and
+  rather than stranding every page beneath it (which would leave just the entry
+  page of a thread archived before the crawl skipped to another), the crawler
+  still steps to the previous page and keeps marching down — the blocked page is
+  recorded as failed and retried on the next resume. Per-post permalinks (`…/page-700#post-24855389`) collapse onto their
   page — the `#post-…` anchor is dropped — so a post is never archived as a
   separate, duplicate page.
 

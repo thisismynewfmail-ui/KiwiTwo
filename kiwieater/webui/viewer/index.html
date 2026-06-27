@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KiwiEater Archive</title>
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<header id="ke-bar">
+  <span class="ke-brand">🥝 KIWIEATER ARCHIVE</span>
+  <nav class="ke-nav">
+    <a href="#home" data-nav>⌂ MAIN</a>
+    <a href="#index" data-nav>≣ INDEX</a>
+    <a href="#gallery" data-nav>▦ GALLERY</a>
+    <a href="#search" data-nav>⌕ SEARCH</a>
+  </nav>
+  <form id="ke-search" autocomplete="off">
+    <input id="ke-q" name="q" placeholder="character / thread / keyword…">
+    <button type="submit">SCAN</button>
+  </form>
+</header>
+
+<div id="ke-status">Loading archive manifest…</div>
+<main id="ke-content"></main>
+<footer id="ke-foot">KIWIEATER · OFFLINE ARCHIVAL MAINFRAME · portable JSON backup</footer>
+
+<script src="viewer.js"></script>
+</body>
+</html>

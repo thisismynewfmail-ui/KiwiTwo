@@ -65,9 +65,13 @@ def plan_children(url, depth, links, max_depth, is_known=None, focus_path=None):
       opens on its *most recent* page, so we step to the **previous** page first
       (``…/page-700 → …/page-699 → …``) and systematically walk down to page 1;
       the next page is queued too when one is advertised, which covers a lower
-      entry point and any page a new post appends mid-crawl.  ``max_advertised``
-      is re-read from each page's own nav, so a page count that changes while the
-      backup runs is handled rather than cached.
+      entry point and the walk up toward the newest page.  ``max_advertised`` is
+      re-read from each page's own nav, so a page count that changes while the
+      backup runs is seen rather than cached — and when the thread grows a *new*
+      last page after we have already descended past the old end (the +1 step
+      then only re-treads a page we hold), the crawl re-extends straight to that
+      advertised frontier and walks it back down, so a post made mid-backup is
+      still archived in full rather than left off the end.
 
     * **Content sections dive, listings fan out.**  On a thread we put its
       pagination *first* so the thread is followed to its end before its outbound
@@ -112,13 +116,29 @@ def plan_children(url, depth, links, max_depth, is_known=None, focus_path=None):
     # it is covered in full regardless of which page we entered on.  Threads open
     # on the most recent page, so the previous page leads (a systematic walk down
     # to page 1); the next page follows when one is advertised, picking up a lower
-    # entry point and any page a new post adds while the backup is running.
-    # ``max_advertised`` is re-derived from this page every call, never cached.
+    # entry point and walking up toward the newest page.  ``max_advertised`` is
+    # re-derived from this page every call, never cached, so a page count that
+    # changes mid-backup is seen rather than stale.
     cur_page = split_pagination(url)[1]
     max_advertised = max(same_section_pages) if same_section_pages else cur_page
-    prev_pg = page_url(section, cur_page - 1) if cur_page > 1 else None
-    next_pg = next_page_url(url) if max_advertised > cur_page else None
-    pagination = [p for p in (prev_pg, next_pg) if p]
+    pagination = []
+    if cur_page > 1:
+        pagination.append(page_url(section, cur_page - 1))      # walk down
+    if max_advertised > cur_page:
+        nxt = next_page_url(url)                                # walk up one page
+        pagination.append(nxt)
+        # Re-extend to a frontier that grew out of reach.  Descending from the
+        # latest page, the +1 step is always a page we have already taken, so a
+        # post that appends a *new* last page after we passed the old end would
+        # otherwise never be queued — the bug that left a growing thread short.
+        # When the immediate next page is already settled yet the thread now
+        # advertises an even later page, jump straight to that newest page; its
+        # own previous-page walk then backfills any gap down to the pages already
+        # held.  Gated on ``is_known`` so it fires only for genuine growth, never
+        # on a fresh sequential walk (where the +1 step is the unseen next page).
+        frontier = page_url(section, max_advertised)
+        if frontier != nxt and is_known(nxt) and not is_known(frontier):
+            pagination.append(frontier)
 
     # Pagination is a same-section continuation and must NOT be cut off by the
     # depth cap, or a long thread would be archived only part-way; only descents
@@ -274,8 +294,12 @@ class Crawler:
         parent = None
         for i, u in enumerate(chain):
             active = (i == len(chain) - 1)
+            # Record the real page number — a thread can be the seed itself
+            # (root URL ``…/page-700``), and page_no drives both the saved
+            # metadata and the systematic walk down from a failed entry page.
             self.store.enqueue(u, i + 1, trail=trail, parent=parent,
-                               section=section_key(u), page_no=1,
+                               section=section_key(u),
+                               page_no=split_pagination(u)[1],
                                breadcrumb=0 if active else 1)
             parent = u
             trail = child_trail(trail, 0)
@@ -399,6 +423,16 @@ class Crawler:
                     if attempts >= max_attempts:
                         self.store.mark(url, "failed", bump_attempt=True)
                         log("ERROR", f"Giving up on {url}: {exc}")
+                        # Keep the systematic descent unbroken.  A thread is
+                        # walked newest-page-downward and each page is normally
+                        # queued by the *success* of the page above it, so a
+                        # single blocked page (a challenge/timeout) would
+                        # otherwise truncate the whole thread here and let the
+                        # crawl skip to another one — the "one page per thread"
+                        # cycling.  Still step to the previous page so the rest
+                        # of the thread is archived; the blocked page stays
+                        # ``failed`` and is retried on the next resume.
+                        self._continue_after_failure(item, depth, trail)
                     else:
                         self.store.mark(url, "pending", bump_attempt=True)
                         backoff = min(45, 2 ** attempts) + random.random()
@@ -435,6 +469,27 @@ class Crawler:
     # ------------------------------------------------------------------ #
     #  Helpers
     # ------------------------------------------------------------------ #
+    def _continue_after_failure(self, item, depth, trail):
+        """Step the systematic pagination walk past a page we had to give up on.
+
+        Pagination is normally chained — the previous page is enqueued only when
+        the current one is archived successfully — so a single blocked page would
+        otherwise strand every page below it and the crawl would move on to a
+        different thread, archiving just the one entry page of each.  When a page
+        with a previous page in its section is abandoned, we enqueue that previous
+        page directly (it is purely positional — ``…/page-(N-1)`` — and needs no
+        content from the failed page), so the thread keeps marching down to page 1
+        regardless of intermittent challenge/timeout failures.  De-duplicated by
+        ``enqueue_or_reopen``, so nothing already queued/archived is disturbed."""
+        # Derive both from the URL, the source of truth — the queued metadata can
+        # lag (the seed records page_no=1 even for a thread entered at /page-700).
+        section, page_no = split_pagination(item["url"])
+        if page_no > 1:
+            prev = page_url(section, page_no - 1)
+            self.store.enqueue_or_reopen(
+                prev, depth + 1, trail=child_trail(trail, 0),
+                parent=item["url"], section=section, page_no=page_no - 1)
+
     def _interruptible_sleep(self, seconds):
         slept = 0.0
         while slept < seconds and not self._stop.is_set():

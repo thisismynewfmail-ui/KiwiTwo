@@ -9,6 +9,7 @@ Flask, no kiwifarms.st access).
 
 import os
 import sys
+import time
 import shutil
 import tempfile
 import unittest
@@ -53,6 +54,19 @@ def _point_config_at(tmp):
 def _thread_page_links(base, total_pages):
     """A thread/forum page advertises its full pagination (1..total)."""
     return [{"href": page_url(base, n)} for n in range(1, total_pages + 1)]
+
+
+def _realistic_thread_nav(base, current, total, window=2):
+    """A faithful XenForo page nav: the first page, a small window around the
+    current page, and — always — the *last* page.  Unlike ``_thread_page_links``
+    it does not advertise every page, so a crawl can only learn the true end of a
+    thread from the always-present last-page link.  This is what makes the
+    descend-from-the-latest-page walk and its mid-crawl growth handling realistic
+    to test."""
+    shown = {1, total}
+    for n in range(max(1, current - window), min(total, current + window) + 1):
+        shown.add(n)
+    return [{"href": page_url(base, n)} for n in sorted(shown)]
 
 
 class FakeSite:
@@ -437,6 +451,48 @@ class ThreadCoverage(unittest.TestCase):
         for n in range(2, 5):
             self.assertEqual(crawled.count(THREAD + f"/page-{n}"), 1)
 
+    def test_posts_appended_while_descending_from_the_last_page_are_caught(self):
+        # The real KiwiFarms scenario: the thread is entered on its most recent
+        # page and walked *down*.  While descending, new posts append fresh pages
+        # at the top (12 -> 14).  Because the down-walk's +1 step always lands on
+        # a page already taken, those new pages would be missed unless the crawl
+        # re-extends to the advertised last page — this is the regression guard.
+        total = 12
+        last = THREAD + f"/page-{total}"
+        state = {"total": total, "grown": False}
+
+        def link_map(url):
+            base, _ = split_pagination(url)
+            if url == HOME:
+                return [{"href": FORUM}]
+            if base == FORUM:
+                return [{"href": last}]            # linked at its latest page only
+            if base == THREAD:
+                page = split_pagination(url)[1]
+                # Once we have descended to page 9, a flurry of posts appends two
+                # whole new pages (13 and 14) past the end we entered on.
+                if page == 9 and not state["grown"]:
+                    state["grown"] = True
+                    state["total"] = 14
+                return _realistic_thread_nav(THREAD, page, state["total"])
+            return []
+
+        order = run_crawl(FakeSite(link_map), self.store, max_depth=3)
+        crawled = [u for u, _ in order]
+        final_total = 14
+        expected_pages = [THREAD] + [THREAD + f"/page-{n}"
+                                     for n in range(2, final_total + 1)]
+        # Every page 1..14 — including the two appended past the entry point and
+        # the gap backfilled beneath the new frontier — is archived exactly once.
+        for p in expected_pages:
+            self.assertEqual(crawled.count(p), 1, p)
+        self.assertIn(THREAD + "/page-13", crawled)
+        self.assertIn(THREAD + "/page-14", crawled)
+        # The entry and the first few descent steps are still a clean, contiguous
+        # walk down from the page we entered on.
+        self.assertEqual(crawled[2], THREAD + f"/page-{total}")
+        self.assertEqual(crawled[3], THREAD + f"/page-{total - 1}")
+
 
 # --------------------------------------------------------------------------- #
 #  Focused (sub-section) crawling
@@ -684,6 +740,127 @@ class FocusedCrawl(unittest.TestCase):
         self.assertEqual(set(done), expected)            # full coverage
         self.assertEqual(len(done), len(expected))       # …and no duplicates
         self.assertIn(crashed["url"], done)
+
+
+# --------------------------------------------------------------------------- #
+#  A blocked page must not truncate the thread
+#
+#  KiwiFarms sits behind an anti-bot gate, so individual page fetches
+#  intermittently fail (a challenge re-appears, a request times out).  The
+#  descent is chained — the previous page is normally queued only by the
+#  *success* of the page above it — so without care one blocked page would
+#  strand every page beneath it and the crawl would skip to another thread,
+#  archiving just the single entry page of each.  This drives the *real*
+#  ``Crawler`` against a stub browser that blocks one mid-thread page and
+#  asserts the systematic walk down still reaches page 1.
+# --------------------------------------------------------------------------- #
+def _xenforo_thread_html(base, current, total):
+    """Minimal but faithful XenForo thread-page markup: a ``pageNav`` block that
+    always advertises the first and last page plus a window around the current
+    one, and a post.  Enough for ``clean_html`` to extract real pagination."""
+    shown = sorted({1, total} | set(range(max(1, current - 2),
+                                          min(total, current + 2) + 1)))
+    nav = "".join(
+        f'<li class="pageNav-page"><a href="'
+        f'{base if n == 1 else base + "/page-" + str(n)}">{n}</a></li>'
+        for n in shown)
+    prev = (f'<a class="pageNav-jump pageNav-jump--prev" href="'
+            f'{base if current - 1 == 1 else base + "/page-" + str(current - 1)}'
+            f'">Prev</a>') if current > 1 else ""
+    return (f"<html><head><title>{base} page {current}</title></head><body>"
+            f'<nav class="pageNav">{prev}<ul class="pageNav-main">{nav}</ul></nav>'
+            "<div class='message'><div class='bbWrapper'>a post</div></div>"
+            "</body></html>")
+
+
+class _StubBrowser:
+    """A no-network ``BrowserEngine`` stand-in: serves canned HTML and raises on
+    a configurable set of URLs to mimic a challenge/timeout block."""
+    kind = "stub"
+
+    def __init__(self, pages, fail_urls=(), **_kw):
+        self.pages = pages
+        self.fail_urls = set(fail_urls)
+
+    def start(self):
+        pass
+
+    def warm_up(self, root, should_stop=None):
+        pass
+
+    def cookies(self):
+        return {}
+
+    def quit(self):
+        pass
+
+    def fetch(self, url, should_stop=None):
+        if url in self.fail_urls:
+            raise RuntimeError("simulated challenge/timeout on " + url)
+        return self.pages.get(url, "<html><body></body></html>"), url
+
+
+class DescentSurvivesBlockedPages(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kiwi-test-")
+        _point_config_at(self.tmp)
+        import kiwieater.crawler as crawlermod
+        self.crawlermod = crawlermod
+        self._real_engine = crawlermod.BrowserEngine
+        from kiwieater.storage import ArchiveStore
+        self.store = ArchiveStore()
+
+    def tearDown(self):
+        self.crawlermod.BrowserEngine = self._real_engine   # un-patch
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run_crawl(self, root, fail_urls):
+        from kiwieater.crawler import Crawler
+        from kiwieater.archive_builder import ArchiveBuilder
+        pages = {(THREAD if n == 1 else THREAD + f"/page-{n}"):
+                 _xenforo_thread_html(THREAD, n, 5) for n in range(1, 6)}
+        stub = _StubBrowser(pages, fail_urls=fail_urls)
+        self.crawlermod.BrowserEngine = lambda **kw: stub
+        cr = Crawler(self.store, ArchiveBuilder(self.store))
+        ok, _msg = cr.start({"root_url": root, "assets": False, "sleep": 0,
+                             "jitter": 0, "headless": True, "max_attempts": 1},
+                            mode="new")
+        self.assertTrue(ok)
+        for _ in range(500):            # generous bound; finishes in well under 1s
+            time.sleep(0.02)
+            if cr.state in ("done", "error", "idle"):
+                break
+        self.assertEqual(cr.state, "done")
+
+    def test_blocked_mid_thread_page_does_not_strand_the_pages_below_it(self):
+        blocked = THREAD + "/page-3"
+        # Entered on the most recent page (page-5), walking down, page-3 is blocked.
+        self._run_crawl(THREAD + "/page-5", fail_urls=[blocked])
+        # Every page except the blocked one is archived — including the pages
+        # *below* the block (page-2 and page-1), which is the whole point: a
+        # single blocked page no longer truncates the thread.
+        for n in range(1, 6):
+            url = THREAD if n == 1 else THREAD + f"/page-{n}"
+            if url == blocked:
+                self.assertFalse(self.store.page_exists(url))   # genuinely failed
+            else:
+                self.assertTrue(self.store.page_exists(url), url)
+        # The blocked page is recorded as failed (retryable on resume), not lost.
+        self.assertEqual(self.store.stats()["failed"], 1)
+        # The walk reached the very bottom of the thread.
+        self.assertTrue(self.store.page_exists(THREAD))           # page 1
+
+    def test_a_blocked_entry_page_still_starts_the_descent(self):
+        # Even when the page we entered on (the most recent) is itself blocked,
+        # the systematic walk down must still begin — page_no comes from the URL,
+        # so the crawl steps to the previous page and covers the rest.
+        entry = THREAD + "/page-5"
+        self._run_crawl(entry, fail_urls=[entry])
+        self.assertFalse(self.store.page_exists(entry))           # genuinely failed
+        for n in range(1, 5):                                     # pages 4..1 saved
+            url = THREAD if n == 1 else THREAD + f"/page-{n}"
+            self.assertTrue(self.store.page_exists(url), url)
+        self.assertEqual(self.store.stats()["failed"], 1)
 
 
 if __name__ == "__main__":

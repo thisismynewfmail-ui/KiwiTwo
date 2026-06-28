@@ -315,6 +315,22 @@ class ViewerThemePackaging(unittest.TestCase):
                     ".bbWrapper", ".pageNav"):
             self.assertIn(sel, theme)
 
+    def test_theme_constrains_icon_svgs_and_lays_out_horizontally(self):
+        from kiwieater.archive_builder import ArchiveBuilder
+        ArchiveBuilder(store=None)._sync_viewer()
+        theme = self._read("archive-theme.css")
+        # Inline icon SVGs (FontAwesome sprites) are capped to a glyph size, so
+        # they can't render at the default ~300x150 box as huge green blocks /
+        # an oversized award badge / broken pagination arrows.
+        self.assertRegex(theme, r"svg\s*\{[^}]*height:1\.15em")
+        # …while a real header/site logo SVG is allowed to stay larger.
+        self.assertIn(".p-header-logo svg", theme)
+        # Posts and listing rows lay out HORIZONTALLY (forum layout), not stacked.
+        self.assertRegex(theme, r"\.message-inner\s*\{[^}]*display:flex")
+        self.assertRegex(theme, r"\.structItem[^{]*\{[^}]*display:flex")
+        # The top nav reads as a menu: each entry keeps icon + label on one line.
+        self.assertRegex(theme, r"\.p-navEl-link[^{]*\{[^}]*display:inline-flex")
+
     def test_viewer_drops_site_css_and_injects_the_theme(self):
         from kiwieater.archive_builder import ArchiveBuilder
         ArchiveBuilder(store=None)._sync_viewer()

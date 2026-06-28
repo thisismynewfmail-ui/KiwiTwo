@@ -81,6 +81,17 @@ ul,ol{ padding-left:1.4em; } li{ margin:.2em 0; }
 img{ max-width:100%; height:auto; }
 figure{ margin:1em 0; }
 
+/* Inline SVG icons (FontAwesome sprites and the like) lost the dimensions the
+   site's own CSS gave them when that CSS was dropped — so without this rule they
+   render at the browser's default ~300x150 SVG box and, filled with
+   ``currentColor``, become the "big green blocks", the oversized award badge and
+   the broken pagination arrows from the report.  Default every inline SVG to an
+   icon-sized glyph that flows with the surrounding text. */
+svg{ height:1.15em; width:auto; max-width:100%; vertical-align:-.15em; }
+/* …but let a genuine site/header logo keep a real, larger size. */
+.p-header-logo svg, .p-nav-logo svg, .p-title-logo svg, a.p-navLogo svg,
+.p-header svg.p-logo{ height:auto; width:auto; max-height:56px; }
+
 /* ---- tables --------------------------------------------------------------- */
 table{ border-collapse:collapse; width:100%; margin:1em 0; font-size:.95em; }
 th,td{
@@ -134,7 +145,18 @@ button:hover, .button:hover{ filter:brightness(1.08); }
   color:var(--ke-green-2); text-transform:uppercase;
   letter-spacing:1px; font-size:.9em;
 }
+/* Each nav entry keeps its icon and label together on one line, so the top
+   strip reads as a proper horizontal menu rather than scattered text. */
+.p-navEl-link, .p-sectionLinks-list a, .p-navEl{
+  display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+}
 .p-title-value, .p-header-logo, .p-description{ color:var(--ke-amber); }
+
+/* Site header (logo strip above the nav). */
+.p-header, .p-header-inner{
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin:0 0 10px;
+}
+.p-header-logo img{ max-height:56px; width:auto; }
 
 /* blocks / panels / posts — the console "cards" */
 .block, .block-container, .node, .structItem, .message, .bbCodeBlock,

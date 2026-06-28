@@ -110,17 +110,26 @@ button:hover, .button:hover{ filter:brightness(1.08); }
 /*  XenForo (KiwiFarms) structural theming                                   */
 /* ======================================================================== */
 
-/* page nav / section links / breadcrumbs — the green status strip */
+/* page nav / section links / breadcrumbs — the green status strip.  Every one
+   of these bars gets the same box: identical padding, so their contents line up
+   at the same inset and the strips read as an even, deliberate stack. */
 .p-nav, .p-sectionLinks, .p-breadcrumbs, .breadcrumb, .blockMessage, .notice{
   background:linear-gradient(#16341c,#0c1f12);
   border:1px solid var(--ke-green-deep); border-radius:8px;
   margin:0 0 16px; padding:9px 13px;
 }
-.p-nav-list, .p-sectionLinks-list, .p-breadcrumbs, .breadcrumb,
+/* Lay the items of every strip out as one evenly-spaced, vertically-centred row.
+   The breadcrumb IS its own box (a <ul>), so it KEEPS the box padding above; the
+   inner lists sit inside an already-padded box and zero their own padding below.
+   (Listing the breadcrumb here with ``padding:0`` is what made it hug the left
+   edge while the nav was inset — the bars looked misaligned.) */
+.p-nav-inner, .p-nav-list, .p-sectionLinks-list, .p-breadcrumbs, .breadcrumb,
 .listInline, .menu-content > ul{
-  list-style:none; margin:0; padding:0;
-  display:flex; flex-wrap:wrap; gap:6px 16px;
+  list-style:none; margin:0;
+  display:flex; flex-wrap:wrap; align-items:center; gap:6px 16px;
 }
+.p-nav-inner, .p-nav-list, .p-sectionLinks-list, .listInline,
+.menu-content > ul{ padding:0; }
 .p-navEl-link, .p-sectionLinks a, .p-breadcrumbs a, .breadcrumb a{
   color:var(--ke-green-2); text-transform:uppercase;
   letter-spacing:1px; font-size:.9em;

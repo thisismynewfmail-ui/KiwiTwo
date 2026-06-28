@@ -10,11 +10,12 @@ standalone viewer can localise them later without re-resolving against a base.
 """
 
 import re
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
 from . import config
-from .urls import normalize_url, in_scope
+from .urls import normalize_url, in_scope, looks_like_asset
 
 # Markers that betray ad / tracking / consent / anti-bot containers.
 #
@@ -116,6 +117,29 @@ def _srcset_candidates(srcset):
         part = part.strip()
         if part:
             yield part.split()[0]
+
+
+_LIGHTBOX_CLASSES = ("lbimage", "lightbox", "fancybox", "lbtrigger")
+
+
+def _is_image_anchor(a, href_url):
+    """True for a link that points at a captured-worthy image — specifically a
+    thumbnail's link to its full-size attachment.
+
+    Tight on purpose: it must *contain an image* (the thumbnail) and either sit
+    on XenForo's ``/attachments/`` route, carry a lightbox class, or name an
+    image file.  That excludes the profile links wrapped around avatars and the
+    title links in listings, so only genuine full-size media is queued."""
+    if a.find("img") is None:
+        return False
+    try:
+        path = urlparse(href_url).path.lower()
+    except Exception:
+        return False
+    if path.startswith("/attachments/") or looks_like_asset(href_url):
+        return True
+    classes = " ".join(a.get("class") or []).lower()
+    return any(c in classes for c in _LIGHTBOX_CLASSES)
 
 
 def _soup(html):
@@ -229,13 +253,23 @@ def clean_html(html, base_url):
         asset_urls.update(imp)
         asset_urls.update(refs)
 
-    # Anchors: absolutise; record structure for navigation/audit.
+    # Anchors: absolutise; record structure for navigation/audit.  A thumbnail's
+    # lightbox link is also harvested as an asset: KiwiFarms wraps an inline
+    # image's thumbnail in a link to the *full-size* attachment
+    # (``<a class="js-lbImage" href="/attachments/…/">``), and that full image —
+    # the actual posted media — is not an ``<img src>`` and has no file
+    # extension, so it would otherwise never be captured and clicking the
+    # thumbnail would dead-end.  Only links that *wrap an image* and point at the
+    # attachment route (or a lightbox/image target) qualify, so member/profile
+    # links behind avatars are not mistaken for media.
     links = []
     for a in soup.find_all("a", href=True):
         u = normalize_url(a["href"], base_url)
         if not u:
             continue
         a["href"] = u
+        if in_scope(u) and _is_image_anchor(a, u):
+            asset_urls.add(u)
         links.append({"href": u,
                       "text": a.get_text(" ", strip=True)[:120],
                       "internal": in_scope(u)})

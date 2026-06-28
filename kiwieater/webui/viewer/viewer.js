@@ -202,6 +202,16 @@
       if (!href || href[0] === "#") return;
       var abs;
       try { abs = new URL(href, base).href; } catch (e) { return; }
+      // A link straight to a captured asset (e.g. a thumbnail's lightbox link to
+      // the full-size attachment, or a linked PDF) points at the on-disk BLOB so
+      // it opens from the archive instead of a dead in-archive page route.
+      var assetBlob = blobFor(abs);
+      if (assetBlob) {
+        a.setAttribute("href", assetBlob);
+        a.setAttribute("target", "_blank");
+        a.setAttribute("rel", "noopener noreferrer");
+        return;
+      }
       var inScope = isInScope(abs);
       if (inScope && pageMap[stripSlash(abs)]) {
         a.setAttribute("href", TOPURL + "#u=" + encodeURIComponent(stripSlash(abs)));

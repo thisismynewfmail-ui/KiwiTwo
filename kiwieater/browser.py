@@ -309,6 +309,75 @@ class BrowserEngine:
         except Exception:
             return "", ""
 
+    # ------------------------------------------------------------------ #
+    #  Asset capture (through the *cleared* browser session)
+    # ------------------------------------------------------------------ #
+    def fetch_binary(self, url, referer=None, timeout=30):
+        """Download a media/asset BLOB through the browser that already cleared
+        the gate, returning ``(content_type, bytes)`` or ``None``.
+
+        This is the reliable path for a gated site.  Kiwiflare/Cloudflare bind a
+        clearance cookie to the browser that earned it — its TLS/JA3 fingerprint,
+        User-Agent and IP — so a plain ``requests`` call carrying only the copied
+        cookie is frequently rejected (an HTML challenge or a 403), which is what
+        left attachment images "not in the archive" even though the page itself
+        was captured.  Fetching with the browser's own networking reuses that
+        exact, accepted session, so the image/video bytes actually come back.
+
+        Returns ``None`` (so the caller can fall back to ``requests``) on any
+        error, a non-OK status, an empty body, or an HTML anti-bot shell handed
+        back in place of binary data.
+        """
+        try:
+            if self.kind == "playwright":
+                return self._fetch_binary_playwright(url, referer, timeout)
+            if self.kind == "selenium":
+                return self._fetch_binary_selenium(url, referer, timeout)
+        except Exception:
+            return None
+        return None
+
+    def _fetch_binary_playwright(self, url, referer, timeout):
+        headers = {"Referer": referer} if referer else {}
+        resp = self._ctx.request.get(url, headers=headers,
+                                     timeout=timeout * 1000)
+        if not resp.ok:
+            return None
+        ct = (resp.headers.get("content-type", "") or "").split(";")[0].strip()
+        if ct.startswith("text/html"):          # a challenge shell, not an asset
+            return None
+        body = resp.body()
+        return (ct, body) if body else None
+
+    def _fetch_binary_selenium(self, url, referer, timeout):
+        """Fetch the asset from inside the page (same origin as the asset, so the
+        browser's cookies and fingerprint apply) and hand the bytes back as a
+        data: URL we decode here."""
+        import base64
+        script = (
+            "const cb = arguments[arguments.length - 1];"
+            "fetch(arguments[0], {credentials:'include'})"
+            ".then(r => r.ok ? r.blob() : null).then(b => {"
+            "  if(!b){cb(null);return;}"
+            "  const fr = new FileReader();"
+            "  fr.onload = () => cb(fr.result);"
+            "  fr.onerror = () => cb(null);"
+            "  fr.readAsDataURL(b);"
+            "}).catch(() => cb(null));")
+        self._driver.set_script_timeout(timeout)
+        data_url = self._driver.execute_async_script(script, url)
+        if not data_url or not data_url.startswith("data:"):
+            return None
+        meta, _, b64 = data_url.partition(",")
+        ct = meta[5:].split(";")[0].strip()      # strip "data:" and ";base64"
+        if ct.startswith("text/html"):
+            return None
+        try:
+            body = base64.b64decode(b64)
+        except Exception:
+            return None
+        return (ct, body) if body else None
+
     def _has_clearance_cookie(self):
         try:
             names = set(self.cookies().keys())

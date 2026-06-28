@@ -19,6 +19,7 @@ from datetime import datetime
 
 from . import config
 from .logbook import log
+from .urls import normalize_url
 
 
 class ArchiveBuilder:
@@ -38,7 +39,11 @@ class ArchiveBuilder:
         images = self.store.list_images()
         blob_idx = self.store.blob_index()
         stats = self.store.stats()
-        root = self.store.get_meta("root_url", config.DEFAULT_ROOT)
+        # Normalise the root so it matches the key every page is stored under
+        # (the crawler normalises page URLs, and ``DEFAULT_ROOT`` carries a
+        # trailing slash); otherwise the viewer's "main page" lookup could miss.
+        root = (normalize_url(self.store.get_meta("root_url", config.DEFAULT_ROOT))
+                or config.DEFAULT_ROOT)
         session = self.store.get_meta("session_id", "")
 
         manifest = {

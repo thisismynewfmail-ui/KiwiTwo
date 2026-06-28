@@ -32,6 +32,54 @@ def _now():
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _sniff_ext(data):
+    """Best-effort file extension from a BLOB's leading magic bytes.
+
+    Used only when the declared content-type is missing or unrecognised, so a
+    real image/video/font served with a vague type (``application/octet-stream``
+    and friends — common from behind a CDN/anti-bot edge) is still saved with a
+    renderable extension instead of an inert ``.bin``.
+    """
+    if not data:
+        return None
+    head = data[:16]
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if head.startswith(b"BM"):
+        return ".bmp"
+    if head.startswith(b"\x00\x00\x01\x00"):
+        return ".ico"
+    if head.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return ".webp"
+    if head.startswith(b"wOF2"):
+        return ".woff2"
+    if head.startswith(b"wOFF"):
+        return ".woff"
+    if head.startswith(b"%PDF"):
+        return ".pdf"
+    if head.startswith(b"OggS"):
+        return ".ogg"
+    if head.startswith(b"\x1aE\xdf\xa3"):       # Matroska / WebM
+        return ".webm"
+    if head.startswith(b"ID3") or head[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return ".mp3"
+    if data[4:8] == b"ftyp":                    # ISO base media (mp4/avif/heic)
+        brand = data[8:12]
+        if brand in (b"avif", b"avis"):
+            return ".avif"
+        if brand in (b"heic", b"heix", b"mif1", b"msf1"):
+            return ".heic"
+        return ".mp4"
+    stripped = data[:64].lstrip()
+    if stripped[:5].lower() == b"<?xml" or stripped[:4].lower() == b"<svg":
+        return ".svg"
+    return None
+
+
 class ArchiveStore:
     def __init__(self):
         config.ensure_dirs()
@@ -313,18 +361,37 @@ class ArchiveStore:
             return c.execute("SELECT 1 FROM blobs WHERE url=?",
                              (url,)).fetchone() is not None
 
-    def _blob_paths(self, sha, content_type, url):
+    def _asset_ext(self, content_type, url, data=b""):
+        """Decide a BLOB's on-disk extension.
+
+        The extension matters: the archive is served as static files and a
+        browser will only render an image/video that arrives with a sensible
+        type, which static servers infer from the file extension.  So we resolve
+        it from the most reliable signal down to the least:
+
+        1. the declared ``content_type`` (XenForo serves correct types),
+        2. the bytes themselves (a magic-number sniff — this is what rescues a
+           real image delivered with a missing/odd content-type from becoming an
+           unrenderable ``.bin``),
+        3. the URL's own extension, and finally ``.bin``.
+        """
         ext = config.CONTENT_TYPE_EXT.get((content_type or "").lower())
-        if not ext:
-            base = os.path.splitext(url.split("?")[0])[1].lower()
-            ext = base if base and len(base) <= 6 else ".bin"
+        if ext:
+            return ext
+        ext = _sniff_ext(data)
+        if ext:
+            return ext
+        base = os.path.splitext(url.split("?")[0])[1].lower()
+        return base if base and len(base) <= 6 and base.isascii() else ".bin"
+
+    def _blob_paths(self, sha, ext):
         rel = os.path.join("blobs", sha[:2], f"{sha}{ext}")
         return rel, os.path.join(config.ARCHIVE_DIR, rel)
 
     def save_asset(self, url, content_type, data, source_page=""):
         """Persist a media/asset BLOB to disk, de-duplicated by SHA-256."""
         sha = hashlib.sha256(data).hexdigest()
-        rel, abspath = self._blob_paths(sha, content_type, url)
+        rel, abspath = self._blob_paths(sha, self._asset_ext(content_type, url, data))
         if not os.path.exists(abspath):
             os.makedirs(os.path.dirname(abspath), exist_ok=True)
             tmp = abspath + ".tmp"

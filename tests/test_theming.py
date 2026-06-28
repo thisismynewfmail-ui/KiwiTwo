@@ -96,6 +96,26 @@ class CleanerTheme(unittest.TestCase):
         # The preload resource hint is dropped, not turned into an asset.
         self.assertNotIn("https://kiwifarms.st/x.js", assets)
 
+    def test_attachment_lightbox_target_is_captured_but_profile_links_are_not(self):
+        # A thumbnail links to its full-size attachment (the actual posted media,
+        # which is not an <img src> and carries no file extension) — that target
+        # must be harvested so the full image lands in the archive.  The
+        # profile/member link wrapped around an avatar must NOT be mistaken for
+        # media.
+        html = (
+            '<html><body>'
+            '<a href="/members/falur.1/" class="avatar avatar--m">'
+            '  <img src="/data/avatars/m/1/1.jpg"></a>'
+            '<a href="/attachments/full-png.55501/" class="js-lbImage">'
+            '  <img src="/data/attachments/55/55501-thumb.jpg" class="bbImage"></a>'
+            '</body></html>'
+        )
+        _cleaned, _text, assets, _links = clean_html(html, ROOT)
+        self.assertIn("https://kiwifarms.st/attachments/full-png.55501", assets)
+        self.assertIn("https://kiwifarms.st/data/attachments/55/55501-thumb.jpg",
+                      assets)                              # the thumbnail too
+        self.assertNotIn("https://kiwifarms.st/members/falur.1", assets)
+
 
 class JunkFilterIsContentSafe(unittest.TestCase):
     """The ad/tracking/challenge filter must strip junk *without* eating the
@@ -307,6 +327,161 @@ class ViewerThemePackaging(unittest.TestCase):
         # The old white content frame is gone (the regression in the report).
         css = self._read("viewer.css")
         self.assertNotIn("background:#fff", css)
+
+    def test_viewer_links_anchors_to_captured_blobs(self):
+        from kiwieater.archive_builder import ArchiveBuilder
+        ArchiveBuilder(store=None)._sync_viewer()
+        js = self._read("viewer.js")
+        # A link straight to a captured asset (a thumbnail's full-size lightbox
+        # target) is rewritten to the on-disk BLOB so the media opens from the
+        # archive rather than a dead in-archive page route.
+        self.assertIn("assetBlob", js)
+
+
+class _StubAssetBrowser:
+    """A no-network ``BrowserEngine`` stand-in that serves asset bytes the way
+    the *cleared* browser does (``fetch_binary``), so ``_grab_assets`` can be
+    tested preferring the browser over the ``requests`` session."""
+
+    def __init__(self, assets):
+        self.assets = assets            # url -> (content_type, bytes) | None
+        self.asked = []
+
+    def fetch_binary(self, url, referer=None, timeout=30):
+        self.asked.append(url)
+        return self.assets.get(url)
+
+
+class AssetCapturePrefersBrowser(unittest.TestCase):
+    """Attachment images live behind the same Kiwiflare gate as the pages, and
+    the clearance is bound to the browser that earned it — so assets must be
+    pulled through that browser, with ``requests`` only as a fallback.  This is
+    the fix for downloaded images that never made it into the archive."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kiwi-asset-")
+        _point_config_at(self.tmp)
+        from kiwieater.storage import ArchiveStore
+        from kiwieater.crawler import Crawler
+        self.store = ArchiveStore()
+        self.crawler = Crawler(self.store, builder=None)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_browser_fetch_is_preferred_over_requests(self):
+        img = "https://kiwifarms.st/data/attachments/1/1-a.png"
+        self.crawler.browser = _StubAssetBrowser(
+            {img: ("image/png", b"\x89PNG\r\n\x1a\nFROM-BROWSER")})
+        # The requests session would hand back *different* bytes; it must not be
+        # consulted at all when the browser can serve the asset.
+        sess = _FakeSession({img: ("image/png", b"\x89PNG\r\n\x1a\nFROM-REQUESTS")})
+        self.crawler.http = sess
+
+        self.crawler._grab_assets({img}, referer=ROOT)
+
+        self.assertTrue(self.store.has_asset(img))
+        _ct, data = self.store.get_asset(img)
+        self.assertEqual(data, b"\x89PNG\r\n\x1a\nFROM-BROWSER")
+        self.assertNotIn(img, sess.requested)        # requests left untouched
+
+    def test_falls_back_to_requests_when_the_browser_cannot(self):
+        img = "https://kiwifarms.st/data/attachments/1/2-b.jpg"
+        # Browser returns None (blocked / failed) -> requests must take over.
+        self.crawler.browser = _StubAssetBrowser({img: None})
+        sess = _FakeSession({img: ("image/jpeg", b"\xff\xd8\xffFROM-REQUESTS")})
+        self.crawler.http = sess
+
+        self.crawler._grab_assets({img}, referer=ROOT)
+
+        self.assertTrue(self.store.has_asset(img))
+        _ct, data = self.store.get_asset(img)
+        self.assertEqual(data, b"\xff\xd8\xffFROM-REQUESTS")
+        self.assertIn(img, sess.requested)           # fell through to requests
+
+    def test_html_challenge_shell_is_never_stored_as_an_asset(self):
+        img = "https://kiwifarms.st/data/attachments/1/3-c.png"
+        self.crawler.browser = None                  # no browser attached
+        sess = _FakeSession(
+            {img: ("text/html; charset=utf-8", "<html>just a moment…</html>")})
+        self.crawler.http = sess
+
+        self.crawler._grab_assets({img}, referer=ROOT)
+
+        self.assertFalse(self.store.has_asset(img))   # a gate page is not an asset
+
+
+class BlobExtensionSniffing(unittest.TestCase):
+    """A downloaded image must land on disk with a renderable extension — the
+    archive is served statically and the browser only paints media whose type
+    the static server infers from the file name.  An image delivered with a
+    vague content-type must not become an inert ``.bin``."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kiwi-ext-")
+        _point_config_at(self.tmp)
+        from kiwieater.storage import ArchiveStore
+        self.store = ArchiveStore()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _ext(self, url, ct, data):
+        rel = self.store.save_asset(url, ct, data, source_page=ROOT)
+        self.assertTrue(os.path.isfile(os.path.join(config.ARCHIVE_DIR, rel)))
+        return os.path.splitext(rel)[1]
+
+    def test_declared_content_type_wins(self):
+        self.assertEqual(
+            self._ext("https://kiwifarms.st/a", "image/webp", b"RIFF????WEBPxx"),
+            ".webp")
+
+    def test_magic_bytes_rescue_an_unknown_content_type(self):
+        self.assertEqual(
+            self._ext("https://kiwifarms.st/p", "application/octet-stream",
+                      b"\x89PNG\r\n\x1a\n" + b"\x00" * 16), ".png")
+        self.assertEqual(
+            self._ext("https://kiwifarms.st/j", "", b"\xff\xd8\xff\xe0" + b"\x00" * 8),
+            ".jpg")
+        self.assertEqual(
+            self._ext("https://kiwifarms.st/g", None, b"GIF89a" + b"\x00" * 8),
+            ".gif")
+
+    def test_url_extension_then_bin_as_last_resorts(self):
+        # Unknown type *and* unknown bytes, but the URL names an extension.
+        self.assertEqual(
+            self._ext("https://kiwifarms.st/x.svgz?z=1",
+                      "application/octet-stream", b"\x1f\x8bgzipped"), ".svgz")
+        # Nothing to go on at all -> .bin (never guessed wrong).
+        self.assertEqual(
+            self._ext("https://kiwifarms.st/mystery",
+                      "application/octet-stream", b"\x00\x01junkjunk"), ".bin")
+
+
+class ManifestRootIsNormalised(unittest.TestCase):
+    """The viewer finds the "main page" by the normalised root key; the builder
+    must emit a normalised ``root_url`` (``DEFAULT_ROOT`` carries a trailing
+    slash) so that lookup never misses the home page."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="kiwi-root-")
+        _point_config_at(self.tmp)
+        from kiwieater.storage import ArchiveStore
+        self.store = ArchiveStore()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_trailing_slash_root_is_normalised_to_the_page_key(self):
+        from kiwieater.archive_builder import ArchiveBuilder
+        self.store.set_meta("root_url", "https://kiwifarms.st/")
+        self.store.save_page("https://kiwifarms.st", "Home",
+                             "<html><body>home</body></html>", "home", 1,
+                             [], set(), trail="000000")
+        manifest = ArchiveBuilder(self.store).build()
+        self.assertEqual(manifest["root_url"], "https://kiwifarms.st")
+        self.assertIn("https://kiwifarms.st",
+                      [p["url"] for p in manifest["pages"]])
 
 
 if __name__ == "__main__":

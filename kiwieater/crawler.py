@@ -503,11 +503,42 @@ class Crawler:
         except Exception:
             pass
 
+    def _download_asset(self, url, referer):
+        """Fetch one asset's ``(content_type, bytes)``, or ``(None, None)``.
+
+        The cleared **browser** is tried first: Kiwiflare binds its clearance to
+        the browser that solved it, so the browser's own networking is what
+        reliably brings media back from behind the gate.  A plain ``requests``
+        call — carrying only the copied cookie, with a different fingerprint — is
+        the fallback (and the only path when no browser is attached, e.g. in
+        tests).  Either way an HTML challenge shell handed back in place of
+        binary data is rejected rather than stored as if it were the asset."""
+        if self.browser is not None:
+            try:
+                got = self.browser.fetch_binary(url, referer=referer)
+            except Exception:
+                got = None
+            if got and got[1]:
+                return got
+
+        try:
+            r = self.http.get(url, timeout=30, headers={"Referer": referer})
+        except Exception as exc:
+            log("WARNING", f"Asset failed {url}: {exc}")
+            return None, None
+        if r.status_code != 200 or not r.content:
+            return None, None
+        ct = r.headers.get("Content-Type",
+                           "application/octet-stream").split(";")[0].strip()
+        if ct.startswith("text/html"):           # asset came back as a gate
+            return None, None
+        return ct, r.content
+
     def _grab_assets(self, urls, referer):
-        """Download in-scope media/assets as BLOB files via the requests session
-        that shares the browser's clearance cookies, so downloads pass the gate
-        without re-rendering each file.  Anything that returns an HTML challenge
-        shell instead of binary data is skipped rather than stored.
+        """Download in-scope media/assets as BLOB files (see ``_download_asset``
+        for the browser-first, requests-fallback fetch that gets them past the
+        Kiwiflare gate).  Anything that returns an HTML challenge shell instead
+        of binary data is skipped rather than stored.
 
         Stylesheets are mined recursively: every downloaded CSS file is parsed
         for ``@import`` and ``url(...)`` references (fonts, icon sprites,
@@ -539,21 +570,10 @@ class Crawler:
                     if got:
                         ct, data = got
             else:
-                try:
-                    r = self.http.get(u, timeout=30,
-                                      headers={"Referer": referer})
-                    if r.status_code != 200 or not r.content:
-                        continue
-                    ct = r.headers.get(
-                        "Content-Type",
-                        "application/octet-stream").split(";")[0].strip()
-                    if ct.startswith("text/html"):   # asset came back as a gate
-                        continue
-                    self.store.save_asset(u, ct, r.content, source_page=referer)
-                    data = r.content
-                except Exception as exc:
-                    log("WARNING", f"Asset failed {u}: {exc}")
+                ct, data = self._download_asset(u, referer)
+                if data is None:
                     continue
+                self.store.save_asset(u, ct, data, source_page=referer)
                 time.sleep(0.05)     # gentle pacing so bursts don't trip limits
 
             # Follow a stylesheet's own dependencies (fonts/sprites/@imports).

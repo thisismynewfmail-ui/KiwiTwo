@@ -22,7 +22,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from kiwieater import config
-from kiwieater.cleaner import clean_html, extract_css_refs
+from kiwieater.cleaner import clean_html, extract_css_refs, _is_junk_token
 
 
 ROOT = "https://kiwifarms.st/"
@@ -95,6 +95,72 @@ class CleanerTheme(unittest.TestCase):
         self.assertIn("https://kiwifarms.st/data/h1.png", assets)   # srcset
         # The preload resource hint is dropped, not turned into an asset.
         self.assertNotIn("https://kiwifarms.st/x.js", assets)
+
+
+class JunkFilterIsContentSafe(unittest.TestCase):
+    """The ad/tracking/challenge filter must strip junk *without* eating the
+    forum's own content.  The original substring filter matched ``ad-`` inside
+    ``thread-list`` (and every ``thread-…`` class), so it silently deleted whole
+    thread/post blocks — and crashed cleaning a populated container outright —
+    which is what left backups skeletal and unthemed."""
+
+    def test_thread_and_forum_tokens_are_never_treated_as_ads(self):
+        # The names a forum is actually built from must survive cleaning.
+        for tok in ("thread-list", "block--thread-list", "structItem--thread",
+                    "js-threadList", "node-thread", "upload", "uploads",
+                    "header", "p-header", "breadcrumb", "download", "load-more"):
+            self.assertFalse(_is_junk_token(tok),
+                             "content token wrongly flagged as junk: " + tok)
+
+    def test_real_ad_tracking_and_challenge_tokens_are_flagged(self):
+        for tok in ("ad", "ads", "ad-slot", "ads-top", "header-ad", "advert",
+                    "adsbygoogle", "analytics", "gtm-container", "challenge",
+                    "cf-wrapper", "cf_chl_opt", "kiwiflare", "turnstile",
+                    "onetrust-banner", "cookieconsent"):
+            self.assertTrue(_is_junk_token(tok),
+                            "junk token not flagged: " + tok)
+
+    def test_thread_list_and_posts_survive_cleaning(self):
+        # A forum listing whose container class contains the literal "ad-"
+        # (thre-AD-list) plus thread rows and posts — all must remain.
+        html = (
+            '<html><body>'
+            '<div class="block block--thread-list"><div class="block-body">'
+            '<div class="structItem structItem--thread">'
+            '<div class="structItem-title"><a href="/threads/x.1/">A Thread</a></div>'
+            '</div>'
+            '<div class="structItem structItem--thread">'
+            '<div class="structItem-title"><a href="/threads/y.2/">B Thread</a></div>'
+            '</div>'
+            '</div></div>'
+            '<article class="message message--post"><div class="bbWrapper">'
+            'post body text</div></article>'
+            '</body></html>'
+        )
+        cleaned, text, _assets, _links = clean_html(html, ROOT)
+        self.assertIn("structItem--thread", cleaned)
+        self.assertEqual(cleaned.count("structItem--thread"), 2)
+        self.assertIn("A Thread", cleaned)
+        self.assertIn("B Thread", cleaned)
+        self.assertIn("message--post", cleaned)
+        self.assertIn("post body text", text)
+
+    def test_populated_junk_container_is_removed_without_crashing(self):
+        # Decomposing a junk container that has descendants must not raise
+        # (the freed children used to be revisited mid-iteration → AttributeError)
+        # and must not take neighbouring real content with it.
+        html = (
+            '<html><body>'
+            '<div class="adsbygoogle"><span class="inner"><b>buy now</b></span></div>'
+            '<div id="ad-slot"><iframe src="/x"></iframe><p>sponsor</p></div>'
+            '<div class="message--post"><div class="bbWrapper">keep me</div></div>'
+            '</body></html>'
+        )
+        cleaned, text, _assets, _links = clean_html(html, ROOT)   # must not raise
+        self.assertNotIn("adsbygoogle", cleaned)
+        self.assertNotIn("buy now", cleaned)
+        self.assertNotIn("sponsor", cleaned)
+        self.assertIn("keep me", cleaned)
 
 
 # --------------------------------------------------------------------------- #

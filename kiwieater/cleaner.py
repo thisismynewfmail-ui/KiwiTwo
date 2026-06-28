@@ -16,10 +16,49 @@ from bs4 import BeautifulSoup
 from . import config
 from .urls import normalize_url, in_scope
 
-# Substrings in id/class that mark ad / tracking / challenge containers.
-_JUNK_IDCLASS = ("advert", "-ads", "ad-", "adsbygoogle", "analytics", "gtm-",
-                 "cookie-banner", "challenge", "cf-", "kiwiflare", "turnstile",
-                 "onetrust", "consent")
+# Markers that betray ad / tracking / consent / anti-bot containers.
+#
+# These are matched against whole id/class *tokens*, not as raw substrings of
+# the joined attribute string.  Substring matching is what made earlier backups
+# skeletal: the bare fragment ``ad-`` is contained in ``thread-list`` (thre-AD-
+# list), ``upload-…`` and the like, so on a forum built entirely around
+# *threads* the junk filter silently decomposed every thread/post block — and,
+# because decomposing a populated container then revisiting its freed children
+# raised ``AttributeError``, often failed the whole page outright.
+
+# Distinctive fragments that only ever occur in ad/tracking/consent/challenge
+# markup — safe to match anywhere inside a token.
+_JUNK_CONTAINS = ("advert", "adsbygoogle", "analytics", "doubleclick",
+                  "googletag", "gtm", "challenge", "kiwiflare", "turnstile",
+                  "onetrust", "cookieconsent", "cookie-banner", "consent")
+
+# The bare "ad" family, matched only at token boundaries so legitimate names
+# (thread-list, upload, header, breadcrumb, download, load-more) are never
+# mistaken for ads.
+_JUNK_AD_EXACT = {"ad", "ads", "adbox", "adunit", "adslot", "adsense"}
+_JUNK_AD_PREFIX = ("ad-", "ads-", "ad_", "ads_", "cf-", "cf_chl", "consent-")
+_JUNK_AD_SUFFIX = ("-ad", "-ads", "_ad", "_ads")
+
+
+def _is_junk_token(tok):
+    """True if a single id/class token marks ad/tracking/consent/challenge
+    markup.  Token-boundary aware so it never fires on ``thread-…`` & friends."""
+    if not tok:
+        return False
+    if any(j in tok for j in _JUNK_CONTAINS):
+        return True
+    if tok in _JUNK_AD_EXACT:
+        return True
+    return tok.startswith(_JUNK_AD_PREFIX) or tok.endswith(_JUNK_AD_SUFFIX)
+
+
+def _is_junk_el(el):
+    """True if an element's id or any class token marks it as junk to strip."""
+    idv = el.get("id")
+    if idv and _is_junk_token(str(idv).lower()):
+        return True
+    return any(_is_junk_token(str(c).lower()) for c in (el.get("class") or []))
+
 
 _DROP_LINK_REL = ("preconnect", "dns-prefetch", "preload", "prefetch",
                   "modulepreload")
@@ -98,15 +137,19 @@ def clean_html(html, base_url):
     for tag in soup(list(config.STRIP_TAGS)):
         tag.decompose()
 
-    for el in soup.find_all(True):
-        cid = " ".join(filter(None, [
-            el.get("id", ""), " ".join(el.get("class", []) or [])])).lower()
-        if any(k in cid for k in _JUNK_IDCLASS):
+    # Drop ad/tracking/consent/challenge containers.  Collect the matches first,
+    # then decompose, so removing a populated container never strands a child
+    # node we are still iterating over (a freed node has ``attrs == None`` and
+    # would raise) — and skip anything already freed by an ancestor's removal.
+    for el in [e for e in soup.find_all(True) if _is_junk_el(e)]:
+        if not getattr(el, "decomposed", False) and el.parent is not None:
             el.decompose()
-            continue
-        for attr in list(el.attrs):
-            if attr.startswith("on"):           # inline event handlers
-                del el[attr]
+
+    # Strip inline event handlers and drop resource-hint <link>s.  Re-query the
+    # now-pruned tree so no freed node is ever visited.
+    for el in soup.find_all(True):
+        for attr in [a for a in el.attrs if a.startswith("on")]:
+            del el[attr]                          # inline event handlers
         if el.name == "link":
             rel = " ".join(el.get("rel", []) or []).lower()
             if any(r in rel for r in _DROP_LINK_REL):
